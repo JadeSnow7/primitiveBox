@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git bash \
+    && apt-get install -y --no-install-recommends ca-certificates git bash python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY bin/pb-linux-arm64 /usr/local/bin/pb

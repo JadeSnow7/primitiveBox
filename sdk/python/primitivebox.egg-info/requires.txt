@@ -1,0 +1,7 @@
+
+[async]
+aiohttp>=3.9
+
+[dev]
+pytest
+pytest-asyncio

@@ -1,0 +1,4 @@
+# PrimitiveBox E2E Demo Requirements
+primitivebox>=0.2.0
+httpx>=0.20
+openai>=1.0.0

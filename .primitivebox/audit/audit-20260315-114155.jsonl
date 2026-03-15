@@ -1,0 +1,1 @@
+{"timestamp":"2026-03-15T11:42:00.694693838Z","method":"browser.goto","input":{"url":"http://host.docker.internal:8080/"},"output":{"session_id":"browser-a72707be","url":"http://host.docker.internal:8080/","title":"PrimitiveBox Inspector"},"duration":"1.453089788s"}

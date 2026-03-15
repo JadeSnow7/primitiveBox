@@ -1,0 +1,2 @@
+{"timestamp":"2026-03-15T03:36:02.843859Z","method":"sandbox.health","input":null,"duration":"435µs","metadata":{"sandbox_id":"sb-460a1fb3","target_rpc":"http://127.0.0.1:49415/health"}}
+{"timestamp":"2026-03-15T03:36:13.262613Z","method":"sandbox.rpc","input":{"jsonrpc":"2.0","method":"fs.list","params":{"path":"."},"id":1},"duration":"6.0755ms","metadata":{"sandbox_id":"sb-460a1fb3","target_rpc":"http://127.0.0.1:49415/rpc"}}

@@ -11,6 +11,7 @@ import (
 type Options struct {
 	AllowedCommands []string
 	DefaultTimeout  int
+	SandboxMode     bool
 }
 
 // DefaultOptions returns the built-in primitive defaults.

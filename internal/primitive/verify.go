@@ -53,7 +53,7 @@ type verifyTestParams struct {
 	Timeout int    `json:"timeout_s,omitempty"`
 }
 
-type verifyTestResult struct {
+type VerifyTestResult struct {
 	Passed   bool   `json:"passed"`
 	Total    int    `json:"total"`
 	Failures int    `json:"failures"`
@@ -95,7 +95,7 @@ func (v *VerifyTest) Execute(ctx context.Context, params json.RawMessage) (Resul
 	summary := generateTestSummary(execResult.Stdout, execResult.Stderr, passed)
 
 	return Result{
-		Data: verifyTestResult{
+		Data: VerifyTestResult{
 			Passed:   passed,
 			Total:    0, // Could parse from output for specific frameworks
 			Failures: 0,

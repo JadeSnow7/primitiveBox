@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +21,9 @@ type Config struct {
 
 	// Logging and audit
 	Audit AuditConfig `yaml:"audit" json:"audit"`
+
+	// Control plane persistence and background workers
+	Control ControlConfig `yaml:"control" json:"control"`
 }
 
 // ServerConfig defines the RPC server settings.
@@ -50,8 +54,18 @@ type AuditConfig struct {
 	LogDir  string `yaml:"log_dir" json:"log_dir"` // Directory for audit logs
 }
 
+// ControlConfig defines control-plane persistence defaults.
+type ControlConfig struct {
+	DBPath                string `yaml:"db_path" json:"db_path"`
+	ReaperIntervalSeconds int    `yaml:"reaper_interval_seconds" json:"reaper_interval_seconds"`
+}
+
 // DefaultConfig returns a configuration with sensible defaults.
 func DefaultConfig() *Config {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
 	return &Config{
 		Server: ServerConfig{
 			Host: "localhost",
@@ -72,6 +86,10 @@ func DefaultConfig() *Config {
 		Audit: AuditConfig{
 			Enabled: true,
 			LogDir:  ".primitivebox/audit",
+		},
+		Control: ControlConfig{
+			DBPath:                filepath.Join(home, ".primitivebox", "controlplane.db"),
+			ReaperIntervalSeconds: 30,
 		},
 	}
 }

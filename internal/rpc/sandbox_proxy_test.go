@@ -105,13 +105,25 @@ func (proxyDriver) Destroy(ctx context.Context, sandboxID string) error { return
 func (proxyDriver) Exec(ctx context.Context, sandboxID string, cmd sandbox.ExecCommand) (*sandbox.ExecResult, error) {
 	return &sandbox.ExecResult{}, nil
 }
+func (p proxyDriver) Inspect(ctx context.Context, sandboxID string) (*sandbox.Sandbox, error) {
+	status := sandbox.StatusRunning
+	if current, ok := p.statuses[sandboxID]; ok {
+		status = current
+	}
+	return &sandbox.Sandbox{
+		ID:          sandboxID,
+		Status:      status,
+		RPCEndpoint: "http://sandbox.local",
+	}, nil
+}
 func (p proxyDriver) Status(ctx context.Context, sandboxID string) (sandbox.SandboxStatus, error) {
 	if status, ok := p.statuses[sandboxID]; ok {
 		return status, nil
 	}
 	return sandbox.StatusRunning, nil
 }
-func (proxyDriver) Name() string { return "proxy" }
+func (proxyDriver) Capabilities() []sandbox.RuntimeCapability { return nil }
+func (proxyDriver) Name() string                              { return "proxy" }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

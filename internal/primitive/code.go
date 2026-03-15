@@ -6,7 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -174,4 +177,164 @@ func parseGrepOutput(output, baseDir string) []codeSearchMatch {
 		})
 	}
 	return matches
+}
+
+// --------------------------------------------------------------------------
+// code.symbols — Extract symbols (functions, classes, methods) from a file
+// --------------------------------------------------------------------------
+
+// CodeSymbols extracts top-level declarations using language-native regex patterns.
+// Supports Python, Go, JavaScript/TypeScript, Rust, and Java.
+// When Tree-sitter is integrated in a future iteration, this can be swapped in-place.
+type CodeSymbols struct {
+	resolver workspacePathResolver
+}
+
+func NewCodeSymbols(workspaceDir string) *CodeSymbols {
+	return &CodeSymbols{resolver: newWorkspacePathResolver(workspaceDir)}
+}
+
+func (c *CodeSymbols) Name() string     { return "code.symbols" }
+func (c *CodeSymbols) Category() string { return "code" }
+func (c *CodeSymbols) Schema() Schema {
+	return Schema{
+		Name:        "code.symbols",
+		Description: "Extract top-level symbols (functions, classes, methods) from a source file to provide a structural outline",
+		Input: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"path":{"type":"string","description":"File path relative to workspace"},
+				"kinds":{"type":"array","items":{"type":"string"},"description":"Filter by kind: function, class, method (default: all)"}
+			},
+			"required":["path"]
+		}`),
+		Output: json.RawMessage(`{"type":"object","properties":{"symbols":{"type":"array"},"language":{"type":"string"},"total":{"type":"integer"}}}`),
+	}
+}
+
+type codeSymbolsParams struct {
+	Path  string   `json:"path"`
+	Kinds []string `json:"kinds,omitempty"`
+}
+
+// Symbol represents a detected code declaration.
+type Symbol struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`      // "function", "class", "method", "trait", "interface"
+	StartLine int    `json:"start_line"`
+	Signature string `json:"signature,omitempty"`
+}
+
+// symbolPattern is a compiled regex with a target kind.
+type symbolPattern struct {
+	kind    string
+	pattern *regexp.Regexp
+}
+
+// langPattern bundles language name with detection patterns.
+type langPattern struct {
+	name     string
+	patterns []symbolPattern
+}
+
+var langPatterns = map[string]langPattern{
+	".py": {name: "python", patterns: []symbolPattern{
+		{kind: "class", pattern: regexp.MustCompile(`^class\s+(\w+)`)},
+		{kind: "method", pattern: regexp.MustCompile(`^\s{4,}def\s+(\w+)`)},
+		{kind: "function", pattern: regexp.MustCompile(`^def\s+(\w+)`)},
+	}},
+	".go": {name: "go", patterns: []symbolPattern{
+		{kind: "method", pattern: regexp.MustCompile(`^func\s+\([^)]+\)\s+(\w+)\s*\(`)},
+		{kind: "function", pattern: regexp.MustCompile(`^func\s+(\w+)\s*\(`)},
+		{kind: "class", pattern: regexp.MustCompile(`^type\s+(\w+)\s+struct`)},
+	}},
+	".js": {name: "javascript", patterns: []symbolPattern{
+		{kind: "class", pattern: regexp.MustCompile(`^(?:export\s+)?class\s+(\w+)`)},
+		{kind: "function", pattern: regexp.MustCompile(`^(?:export\s+)?(?:async\s+)?function\s+(\w+)`)},
+		{kind: "method", pattern: regexp.MustCompile(`^\s{2,}(?:async\s+)?(\w+)\s*\(`)},
+	}},
+	".ts": {name: "typescript", patterns: []symbolPattern{
+		{kind: "class", pattern: regexp.MustCompile(`^(?:export\s+)?class\s+(\w+)`)},
+		{kind: "interface", pattern: regexp.MustCompile(`^(?:export\s+)?interface\s+(\w+)`)},
+		{kind: "function", pattern: regexp.MustCompile(`^(?:export\s+)?(?:async\s+)?function\s+(\w+)`)},
+		{kind: "method", pattern: regexp.MustCompile(`^\s{2,}(?:async\s+)?(\w+)\s*\(`)},
+	}},
+	".rs": {name: "rust", patterns: []symbolPattern{
+		{kind: "trait", pattern: regexp.MustCompile(`^(?:pub\s+)?trait\s+(\w+)`)},
+		{kind: "class", pattern: regexp.MustCompile(`^(?:pub\s+)?struct\s+(\w+)`)},
+		{kind: "method", pattern: regexp.MustCompile(`^\s{4,}(?:pub\s+)?(?:async\s+)?fn\s+(\w+)`)},
+		{kind: "function", pattern: regexp.MustCompile(`^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)`)},
+	}},
+	".java": {name: "java", patterns: []symbolPattern{
+		{kind: "interface", pattern: regexp.MustCompile(`^(?:public\s+)?interface\s+(\w+)`)},
+		{kind: "class", pattern: regexp.MustCompile(`^(?:public\s+)?(?:abstract\s+)?class\s+(\w+)`)},
+		{kind: "method", pattern: regexp.MustCompile(`^\s{4,}(?:public|private|protected)?(?:\s+static)?\s+\w+\s+(\w+)\s*\(`)},
+	}},
+}
+
+func (c *CodeSymbols) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
+	var p codeSymbolsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "invalid params: " + err.Error()}
+	}
+	if p.Path == "" {
+		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "path is required"}
+	}
+
+	absPath, err := c.resolver.Resolve(p.Path)
+	if err != nil {
+		return Result{}, err
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Result{}, &PrimitiveError{Code: ErrNotFound, Message: "file not found: " + p.Path}
+		}
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+
+	ext := strings.ToLower(filepath.Ext(absPath))
+	lang, ok := langPatterns[ext]
+	if !ok {
+		return Result{Data: map[string]any{
+			"symbols":  []Symbol{},
+			"language": "unknown",
+			"total":    0,
+			"note":     fmt.Sprintf("unsupported extension %q; supported: .py .go .js .ts .rs .java", ext),
+		}}, nil
+	}
+
+	// Build kind filter set
+	kindFilter := map[string]bool{}
+	for _, k := range p.Kinds {
+		kindFilter[k] = true
+	}
+
+	var symbols []Symbol
+	lines := strings.Split(string(data), "\n")
+
+	for i, line := range lines {
+		for _, sp := range lang.patterns {
+			if len(kindFilter) > 0 && !kindFilter[sp.kind] {
+				continue
+			}
+			m := sp.pattern.FindStringSubmatch(line)
+			if len(m) >= 2 {
+				symbols = append(symbols, Symbol{
+					Name:      m[1],
+					Kind:      sp.kind,
+					StartLine: i + 1,
+					Signature: strings.TrimSpace(line),
+				})
+				break // Don't double-match the same line
+			}
+		}
+	}
+
+	return Result{Data: map[string]any{
+		"symbols":  symbols,
+		"language": lang.name,
+		"total":    len(symbols),
+	}}, nil
 }

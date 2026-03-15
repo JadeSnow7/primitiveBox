@@ -14,6 +14,7 @@ if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
 
 from primitivebox import AsyncPrimitiveBoxClient, PrimitiveBoxClient  # noqa: E402
+from primitivebox.async_client import _HTTPX_AVAILABLE  # noqa: E402
 from primitivebox.client import RPCError  # noqa: E402
 
 
@@ -116,9 +117,59 @@ def test_sandbox_client_routes_to_gateway_paths(monkeypatch: pytest.MonkeyPatch)
     assert result["data"]["content"] == "inside sandbox"
 
 
-def test_async_client_is_fail_fast() -> None:
-    with pytest.raises(NotImplementedError):
-        AsyncPrimitiveBoxClient()
+def test_stream_call_and_shell_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream_payload = (
+        "event: started\n"
+        'data: {"method":"shell.exec"}\n'
+        "\n"
+        "event: stdout\n"
+        'data: {"message":"hello"}\n'
+        "\n"
+        "event: completed\n"
+        'data: {"method":"shell.exec","result":{"data":{"stdout":"hello"}}}\n'
+        "\n"
+    )
+    responses = {
+        "http://localhost:8080/rpc/stream": FakeStreamResponse(stream_payload),
+    }
+    monkeypatch.setattr("urllib.request.urlopen", make_urlopen(responses))
+
+    client = PrimitiveBoxClient("http://localhost:8080")
+    events = list(client.shell.stream_exec("printf 'hello\\n'"))
+
+    assert [item["event"] for item in events] == ["started", "stdout", "completed"]
+    assert events[1]["data"]["message"] == "hello"
+
+
+def test_db_and_browser_wrappers(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = {
+        "http://localhost:8080/rpc": {
+            "jsonrpc": "2.0",
+            "result": {
+                "data": {
+                    "session_id": "browser-123",
+                    "url": "http://example.test",
+                    "title": "Example",
+                }
+            },
+            "id": 2,
+        },
+    }
+    monkeypatch.setattr("urllib.request.urlopen", make_urlopen(responses))
+
+    client = PrimitiveBoxClient("http://localhost:8080")
+    browser = client.browser.goto("http://example.test")
+
+    assert browser["data"]["session_id"] == "browser-123"
+
+
+def test_async_client_import_behavior() -> None:
+    if _HTTPX_AVAILABLE:
+        client = AsyncPrimitiveBoxClient("http://localhost:8080")
+        assert client._rpc_path() == "/rpc"
+    else:
+        with pytest.raises(ImportError):
+            AsyncPrimitiveBoxClient()
 
 
 class FakeResponse:
@@ -136,11 +187,28 @@ class FakeResponse:
         return None
 
 
-def make_urlopen(responses: dict[str, dict]):
+class FakeStreamResponse:
+    def __init__(self, payload: str):
+        self._payload = payload.encode("utf-8").splitlines(keepends=True)
+
+    def __iter__(self):
+        return iter(self._payload)
+
+    def __enter__(self) -> "FakeStreamResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def make_urlopen(responses):
     def _urlopen(request, timeout=0):  # noqa: ARG001 - signature matches stdlib usage
         url = request if isinstance(request, str) else request.full_url
         if url not in responses:
             raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
-        return FakeResponse(responses[url])
+        payload = responses[url]
+        if isinstance(payload, (FakeResponse, FakeStreamResponse)):
+            return payload
+        return FakeResponse(payload)
 
     return _urlopen

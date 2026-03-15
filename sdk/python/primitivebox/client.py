@@ -2,16 +2,27 @@
 PrimitiveBox Python SDK Client
 
 Provides synchronous clients for communicating with the PrimitiveBox JSON-RPC
-host gateway over HTTP.
+host gateway over HTTP, including SSE-based streaming calls.
 """
+
+from __future__ import annotations
 
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .events import EventEmitter
-from .primitives import CodePrimitives, FSPrimitives, ShellPrimitives, StatePrimitives, VerifyPrimitives
+from .primitives import (
+    BrowserPrimitives,
+    CodePrimitives,
+    DBPrimitives,
+    FSPrimitives,
+    MacroPrimitives,
+    ShellPrimitives,
+    StatePrimitives,
+    VerifyPrimitives,
+)
 
 
 class PrimitiveBoxClient:
@@ -28,6 +39,9 @@ class PrimitiveBoxClient:
         self.state = StatePrimitives(self)
         self.verify = VerifyPrimitives(self)
         self.code = CodePrimitives(self)
+        self.macro = MacroPrimitives(self)
+        self.db = DBPrimitives(self)
+        self.browser = BrowserPrimitives(self)
 
     def call(self, method: str, params: Optional[dict] = None) -> Any:
         self._call_id += 1
@@ -47,6 +61,32 @@ class PrimitiveBoxClient:
 
         self._events.emit("call", {"method": method, "result": result.get("result")})
         return result.get("result", {})
+
+    def stream_call(self, method: str, params: Optional[dict] = None) -> Iterator[dict[str, Any]]:
+        """Stream a JSON-RPC call over the gateway's SSE endpoint."""
+        self._call_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params or {},
+            "id": self._call_id,
+        }
+
+        req = urllib.request.Request(
+            f"{self.endpoint}{self._stream_path()}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                yield from _iter_sse(response)
+        except urllib.error.HTTPError as e:
+            message = e.read().decode("utf-8", errors="replace")
+            raise ConnectionError(f"PrimitiveBox stream failed ({e.code}) at {self._stream_path()}: {message}") from e
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Cannot connect to PrimitiveBox at {self.endpoint}: {e}") from e
 
     def on(self, event: str, callback) -> None:
         """Subscribe to events: 'call', 'fail', 'checkpoint'."""
@@ -83,6 +123,11 @@ class PrimitiveBoxClient:
             return f"/sandboxes/{self.sandbox_id}/rpc"
         return "/rpc"
 
+    def _stream_path(self) -> str:
+        if self.sandbox_id:
+            return f"/sandboxes/{self.sandbox_id}/rpc/stream"
+        return "/rpc/stream"
+
     def _health_path(self) -> str:
         if self.sandbox_id:
             return f"/sandboxes/{self.sandbox_id}/health"
@@ -117,27 +162,27 @@ class PrimitiveBoxClient:
             raise ConnectionError(f"Cannot connect to PrimitiveBox at {self.endpoint}: {e}") from e
 
 
-class AsyncPrimitiveBoxClient:
-    """
-    Async PrimitiveBox client placeholder.
+def _iter_sse(response) -> Iterator[dict[str, Any]]:
+    event_name = "message"
+    data_lines: list[str] = []
 
-    The symbol is kept for compatibility, but async I/O is not implemented in
-    this MVP and instantiation fails fast.
-    """
+    for raw_line in response:
+        line = raw_line.decode("utf-8").rstrip("\n")
+        if line == "":
+            if data_lines:
+                data = "\n".join(data_lines)
+                yield {"event": event_name, "data": json.loads(data)}
+                event_name = "message"
+                data_lines = []
+            continue
+        if line.startswith("event:"):
+            event_name = line.split(":", 1)[1].strip()
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line.split(":", 1)[1].strip())
 
-    def __init__(self, endpoint: str = "http://localhost:8080", sandbox_id: str = ""):
-        raise NotImplementedError(
-            "AsyncPrimitiveBoxClient is not implemented in this MVP. "
-            "Use PrimitiveBoxClient for the supported synchronous workflow."
-        )
-
-    async def __aenter__(self):
-        raise NotImplementedError(
-            "AsyncPrimitiveBoxClient is not implemented in this MVP."
-        )
-
-    async def __aexit__(self, *args):
-        return None
+    if data_lines:
+        yield {"event": event_name, "data": json.loads("\n".join(data_lines))}
 
 
 class RPCError(Exception):

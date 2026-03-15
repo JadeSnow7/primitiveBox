@@ -5,15 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"primitivebox/internal/audit"
 	"primitivebox/internal/config"
+	"primitivebox/internal/control"
+	"primitivebox/internal/eventing"
 	"primitivebox/internal/primitive"
 	"primitivebox/internal/rpc"
 	"primitivebox/internal/sandbox"
+	pbui "primitivebox/cmd/pb-ui"
 
 	"github.com/spf13/cobra"
 )
@@ -62,26 +68,35 @@ func newServerCmd() *cobra.Command {
 	var port int
 	var host string
 	var workspaceDir string
+	var sandboxMode bool
+	var serveUI bool
 
 	startCmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the host JSON-RPC server and sandbox gateway",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServer(host, port, workspaceDir)
+			return runServer(host, port, workspaceDir, sandboxMode, serveUI)
 		},
 	}
 
 	startCmd.Flags().StringVar(&host, "host", "", "Host interface to bind (defaults to config value)")
 	startCmd.Flags().IntVar(&port, "port", 8080, "Port to listen on (0 = auto-assign)")
 	startCmd.Flags().StringVar(&workspaceDir, "workspace", ".", "Workspace directory for host primitives")
+	startCmd.Flags().BoolVar(&sandboxMode, "sandbox-mode", false, "Run the server as a sandbox-local executor")
+	startCmd.Flags().BoolVar(&serveUI, "ui", false, "Serve the embedded inspector UI")
+	_ = startCmd.Flags().MarkHidden("sandbox-mode")
 	cmd.AddCommand(startCmd)
 	return cmd
 }
 
-func runServer(host string, port int, workspaceDir string) error {
+func runServer(host string, port int, workspaceDir string, sandboxMode, serveUI bool) error {
 	cfg := mustLoadConfig()
 	workspaceDir = resolveWorkspace(workspaceDir)
+	normalizeSandboxRuntimePaths(cfg, workspaceDir, sandboxMode)
 	log.Printf("[PrimitiveBox] Workspace: %s", workspaceDir)
+	if sandboxMode {
+		log.Printf("[PrimitiveBox] Sandbox runtime state dir: %s", filepath.Join(workspaceDir, ".primitivebox"))
+	}
 
 	var auditor *audit.Logger
 	if cfg.Audit.Enabled {
@@ -98,10 +113,34 @@ func runServer(host string, port int, workspaceDir string) error {
 	registry.RegisterDefaults(workspaceDir, primitive.Options{
 		AllowedCommands: cfg.Security.AllowedCommands,
 		DefaultTimeout:  cfg.Sandbox.Timeout,
+		SandboxMode:     sandboxMode,
 	})
-	manager := sandbox.NewManager(sandbox.NewDockerDriver())
+	if sandboxMode {
+		registry.RegisterSandboxExtras(workspaceDir, primitive.Options{
+			AllowedCommands: cfg.Security.AllowedCommands,
+			DefaultTimeout:  cfg.Sandbox.Timeout,
+			SandboxMode:     true,
+		})
+	}
+
+	store, err := control.OpenSQLiteStore(cfg.Control.DBPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	bus := eventing.NewBus(store)
+	manager := newManager(cfg, store, bus)
 
 	server := rpc.NewServer(registry, auditor, manager)
+	server.AttachEventing(bus, store)
+	if serveUI {
+		uiFS, err := pbui.DistFS()
+		if err != nil {
+			return err
+		}
+		server.AttachUI(uiFS)
+	}
 
 	if host == "" {
 		host = cfg.Server.Host
@@ -122,9 +161,14 @@ func runServer(host string, port int, workspaceDir string) error {
 		log.Println("[PrimitiveBox] Shutting down...")
 		_ = server.Shutdown(context.Background())
 	}()
+	go manager.RunReaper(ctx, time.Duration(cfg.Control.ReaperIntervalSeconds)*time.Second)
 
 	log.Printf("[PrimitiveBox] Starting gateway on %s", addr)
-	return server.ListenAndServe(addr)
+	serveErr := server.ListenAndServe(addr)
+	if serveErr != nil && serveErr == http.ErrServerClosed {
+		return nil
+	}
+	return serveErr
 }
 
 func newSandboxCmd() *cobra.Command {
@@ -133,22 +177,54 @@ func newSandboxCmd() *cobra.Command {
 		Short: "Manage Docker-backed PrimitiveBox sandboxes",
 	}
 
-	var image, mountDir, user string
+	var image, mountDir, user, driverName, namespace, networkMode string
 	var cpuLimit float64
 	var memoryLimit int64
+	var ttlSeconds, idleTTLSeconds int64
+	var networkHosts, networkCIDRs []string
+	var networkPorts []int
 
 	createCmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create and start a new sandbox",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := sandbox.NewManager(sandbox.NewDockerDriver())
+			cfg := mustLoadConfig()
+			store, err := control.OpenSQLiteStore(cfg.Control.DBPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			manager := newManager(cfg, store, nil)
 			ctx := context.Background()
+			mountSpecified := cmd.Flags().Changed("mount")
+			if driverName == "kubernetes" && mountSpecified && mountDir != "" {
+				return fmt.Errorf("--mount is unsupported for kubernetes sandboxes in v1; workspaces are PVC-backed")
+			}
+			if driverName == "kubernetes" && !mountSpecified {
+				mountDir = ""
+			}
+			if driverName != "kubernetes" && mountDir == "" {
+				mountDir = "."
+			}
+
 			sb, err := manager.Create(ctx, sandbox.SandboxConfig{
+				Driver:      driverName,
 				Image:       image,
 				MountSource: mountDir,
 				CPULimit:    cpuLimit,
 				MemoryLimit: memoryLimit,
 				User:        user,
+				Namespace:   namespace,
+				Lifecycle: sandbox.LifecyclePolicy{
+					TTLSeconds:     ttlSeconds,
+					IdleTTLSeconds: idleTTLSeconds,
+				},
+				NetworkPolicy: sandbox.NetworkPolicy{
+					Mode:       sandbox.NetworkMode(networkMode),
+					AllowHosts: append([]string(nil), networkHosts...),
+					AllowCIDRs: append([]string(nil), networkCIDRs...),
+					AllowPorts: append([]int(nil), networkPorts...),
+				},
 			})
 			if err != nil {
 				return err
@@ -166,16 +242,30 @@ func newSandboxCmd() *cobra.Command {
 	}
 
 	createCmd.Flags().StringVar(&image, "image", config.DefaultConfig().Sandbox.Image, "Container image")
+	createCmd.Flags().StringVar(&driverName, "driver", "docker", "Runtime driver: docker or kubernetes")
 	createCmd.Flags().StringVar(&mountDir, "mount", ".", "Host directory to mount")
 	createCmd.Flags().StringVar(&user, "user", config.DefaultConfig().Sandbox.User, "User:group to run as")
 	createCmd.Flags().Float64Var(&cpuLimit, "cpu", config.DefaultConfig().Sandbox.CPULimit, "CPU limit (cores)")
 	createCmd.Flags().Int64Var(&memoryLimit, "memory", config.DefaultConfig().Sandbox.MemoryLimit, "Memory limit (MB)")
+	createCmd.Flags().StringVar(&namespace, "namespace", "default", "Runtime namespace / tenancy scope")
+	createCmd.Flags().Int64Var(&ttlSeconds, "ttl", 0, "Absolute sandbox TTL in seconds")
+	createCmd.Flags().Int64Var(&idleTTLSeconds, "idle-ttl", 0, "Idle sandbox TTL in seconds")
+	createCmd.Flags().StringVar(&networkMode, "network-mode", string(sandbox.NetworkModeNone), "Network policy mode: none, full, policy")
+	createCmd.Flags().StringSliceVar(&networkHosts, "network-host", nil, "Allowed egress hostname (repeatable)")
+	createCmd.Flags().StringSliceVar(&networkCIDRs, "network-cidr", nil, "Allowed egress CIDR (repeatable)")
+	createCmd.Flags().IntSliceVar(&networkPorts, "network-port", nil, "Allowed egress port (repeatable)")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all sandboxes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := sandbox.NewManager(sandbox.NewDockerDriver())
+			cfg := mustLoadConfig()
+			store, err := control.OpenSQLiteStore(cfg.Control.DBPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			manager := newManager(cfg, store, nil)
 			sandboxes, err := manager.List(context.Background())
 			if err != nil {
 				return err
@@ -195,7 +285,13 @@ func newSandboxCmd() *cobra.Command {
 		Short: "Inspect a sandbox",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := sandbox.NewManager(sandbox.NewDockerDriver())
+			cfg := mustLoadConfig()
+			store, err := control.OpenSQLiteStore(cfg.Control.DBPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			manager := newManager(cfg, store, nil)
 			sb, err := manager.Inspect(context.Background(), args[0])
 			if err != nil {
 				return err
@@ -210,7 +306,13 @@ func newSandboxCmd() *cobra.Command {
 		Short: "Stop a running sandbox",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := sandbox.NewManager(sandbox.NewDockerDriver())
+			cfg := mustLoadConfig()
+			store, err := control.OpenSQLiteStore(cfg.Control.DBPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			manager := newManager(cfg, store, nil)
 			return manager.Stop(context.Background(), args[0])
 		},
 	}
@@ -220,7 +322,13 @@ func newSandboxCmd() *cobra.Command {
 		Short: "Destroy a sandbox",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := sandbox.NewManager(sandbox.NewDockerDriver())
+			cfg := mustLoadConfig()
+			store, err := control.OpenSQLiteStore(cfg.Control.DBPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			manager := newManager(cfg, store, nil)
 			return manager.Destroy(context.Background(), args[0])
 		},
 	}
@@ -254,7 +362,46 @@ func resolveWorkspace(workspaceDir string) string {
 	return wd
 }
 
+func normalizeSandboxRuntimePaths(cfg *config.Config, workspaceDir string, sandboxMode bool) {
+	if !sandboxMode {
+		return
+	}
+
+	stateDir := filepath.Join(workspaceDir, ".primitivebox")
+	cfg.Control.DBPath = filepath.Join(stateDir, "controlplane.db")
+	cfg.Audit.LogDir = filepath.Join(stateDir, "audit")
+}
+
 func printSandbox(sb *sandbox.Sandbox) {
 	data, _ := json.MarshalIndent(sb, "", "  ")
 	fmt.Println(string(data))
+}
+
+func newManager(cfg *config.Config, store sandbox.Store, bus *eventing.Bus) *sandbox.Manager {
+	var kubeClient sandbox.KubernetesClient
+	if client, err := sandbox.NewDefaultKubernetesClient(); err == nil {
+		kubeClient = client
+	} else {
+		log.Printf("[Kubernetes] Warning: cannot initialize kubernetes client: %v", err)
+	}
+
+	kubeDriver := sandbox.NewKubernetesDriver(kubeClient).WithSandboxLookup(func(ctx context.Context, sandboxID string) (*sandbox.Sandbox, bool, error) {
+		return store.Get(ctx, sandboxID)
+	})
+	router := sandbox.NewRouterDriver(func(sandboxID string) (string, bool) {
+		sb, ok, err := store.Get(context.Background(), sandboxID)
+		if err != nil || !ok {
+			return "", false
+		}
+		return sb.Driver, true
+	},
+		sandbox.NewDockerDriver(),
+		kubeDriver,
+	)
+
+	return sandbox.NewManagerWithOptions(router, sandbox.ManagerOptions{
+		Store:       store,
+		EventBus:    bus,
+		RegistryDir: os.Getenv("PB_SANDBOX_REGISTRY_DIR"),
+	})
 }

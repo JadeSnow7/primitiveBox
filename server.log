@@ -1,0 +1,42 @@
+2026/03/15 11:48:26 [PrimitiveBox] Workspace: /Users/huaodong/TMP/primitivebox
+2026/03/15 11:48:26 [Audit] Logging to .primitivebox/audit/audit-20260315-114826.jsonl
+2026/03/15 11:48:26 [PrimitiveBox] Starting gateway on localhost:8080
+2026/03/15 11:48:26 [RPC] Server listening on 127.0.0.1:8080
+2026/03/15 11:48:37 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:37 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:37 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:37 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:37 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:37 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:37 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:37 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:37 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:37 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:37 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:37 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:55 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:55 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:55 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:55 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:55 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:55 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:55 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:55 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:55 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:55 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 11:48:55 [ProxyDebug] Dispatching POST /rpc to http://127.0.0.1:49965/rpc
+2026/03/15 11:48:55 [ProxyDebug] Success calling upstream, got status 200
+2026/03/15 19:41:09 [PrimitiveBox] Shutting down...
+Error: http: Server closed
+Usage:
+  pb server start [flags]
+
+Flags:
+  -h, --help               help for start
+      --host string        Host interface to bind (defaults to config value)
+      --port int           Port to listen on (0 = auto-assign) (default 8080)
+      --workspace string   Workspace directory for host primitives (default ".")
+
+Global Flags:
+      --config string   config file (default: .primitivebox.yaml)
+

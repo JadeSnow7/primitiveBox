@@ -1,0 +1,1 @@
+{"timestamp":"2026-03-15T09:25:45.06225Z","method":"sandbox.rpc","input":{"jsonrpc":"2.0","method":"fs.list","params":{"path":"."},"id":"k8s-smoke"},"error":"Post \"http://127.0.0.1:62908/rpc\": dial tcp 127.0.0.1:62908: connect: connection refused","duration":"120.583µs","metadata":{"sandbox_id":"sb-29c2aafe","target_rpc":"http://127.0.0.1:62908/rpc"}}

@@ -1,0 +1,12 @@
+setup.py
+primitivebox/__init__.py
+primitivebox/adapters.py
+primitivebox/async_client.py
+primitivebox/client.py
+primitivebox/events.py
+primitivebox/primitives.py
+primitivebox.egg-info/PKG-INFO
+primitivebox.egg-info/SOURCES.txt
+primitivebox.egg-info/dependency_links.txt
+primitivebox.egg-info/requires.txt
+primitivebox.egg-info/top_level.txt

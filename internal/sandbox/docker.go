@@ -42,6 +42,15 @@ func (d *DockerDriver) Name() string {
 	return "docker"
 }
 
+func (d *DockerDriver) Capabilities() []RuntimeCapability {
+	return []RuntimeCapability{
+		{Name: "exec", Supported: true},
+		{Name: "stream_exec", Supported: true},
+		{Name: "ttl_reaper", Supported: true, Notes: "handled by host control plane"},
+		{Name: "network_policy", Supported: false, Notes: "docker driver currently supports only coarse none/full intents"},
+	}
+}
+
 // Create provisions a new Docker container as a sandbox.
 func (d *DockerDriver) Create(ctx context.Context, config SandboxConfig) (*Sandbox, error) {
 	cli, err := d.client()
@@ -82,8 +91,10 @@ func (d *DockerDriver) Create(ctx context.Context, config SandboxConfig) (*Sandb
 		Labels:       labels,
 	}
 
+	networkMode := "bridge" // Must use bridge for port bindings to work
+
 	hostConfig := &containerapi.HostConfig{
-		NetworkMode: "none",
+		NetworkMode: containerapi.NetworkMode(networkMode),
 		Binds:       []string{fmt.Sprintf("%s:%s", config.MountSource, config.MountTarget)},
 		Resources: containerapi.Resources{
 			NanoCPUs: config.cpuQuota(),
@@ -100,6 +111,8 @@ func (d *DockerDriver) Create(ctx context.Context, config SandboxConfig) (*Sandb
 	sandbox := &Sandbox{
 		ID:           sandboxID,
 		ContainerID:  resp.ID,
+		Driver:       d.Name(),
+		Namespace:    config.Namespace,
 		Config:       config,
 		Status:       StatusStopped,
 		HealthStatus: "stopped",
@@ -107,6 +120,11 @@ func (d *DockerDriver) Create(ctx context.Context, config SandboxConfig) (*Sandb
 		RPCEndpoint:  fmt.Sprintf("http://127.0.0.1:%d", hostPort),
 		CreatedAt:    time.Now().Unix(),
 		Labels:       copyStringMap(config.Labels),
+		Capabilities: d.Capabilities(),
+		Metadata: map[string]string{
+			"network_mode_requested": string(config.NetworkPolicy.Mode),
+			"runtime":                d.Name(),
+		},
 	}
 
 	return sandbox, nil
@@ -128,9 +146,15 @@ func (d *DockerDriver) Start(ctx context.Context, sandboxID string) error {
 		return fmt.Errorf("docker container start failed: %w", err)
 	}
 
+	// Re-inspect to populate NetworkSettings.Ports which are empty while container is stopped
+	sb, err = d.inspectSandbox(ctx, cli, sandboxID)
+	if err != nil {
+		return err
+	}
+
 	if _, err := d.Exec(ctx, sandboxID, ExecCommand{
 		Command:    "sh",
-		Args:       []string{"-lc", fmt.Sprintf("nohup pb server start --host 0.0.0.0 --workspace %s --port %d >/tmp/primitivebox-server.log 2>&1 &", sb.Config.MountTarget, containerRPCListen)},
+		Args:       []string{"-lc", fmt.Sprintf("nohup pb server start --host 0.0.0.0 --workspace %s --port %d --sandbox-mode >/tmp/primitivebox-server.log 2>&1 &", sb.Config.MountTarget, containerRPCListen)},
 		Timeout:    10,
 		User:       sb.Config.User,
 		WorkingDir: sb.Config.MountTarget,
@@ -284,12 +308,12 @@ func (d *DockerDriver) Exec(ctx context.Context, sandboxID string, cmd ExecComma
 
 // Status returns the current status of a Docker container.
 func (d *DockerDriver) Status(ctx context.Context, sandboxID string) (SandboxStatus, error) {
-	cli, err := d.client()
+	sb, err := d.Inspect(ctx, sandboxID)
 	if err != nil {
 		return StatusError, err
 	}
 
-	sb, err := d.inspectSandbox(ctx, cli, sandboxID)
+	cli, err := d.client()
 	if err != nil {
 		return StatusError, err
 	}
@@ -316,6 +340,21 @@ func (d *DockerDriver) Status(ctx context.Context, sandboxID string) (SandboxSta
 	default:
 		return StatusError, nil
 	}
+}
+
+// Inspect returns the latest Docker view of a sandbox.
+func (d *DockerDriver) Inspect(ctx context.Context, sandboxID string) (*Sandbox, error) {
+	cli, err := d.client()
+	if err != nil {
+		return nil, err
+	}
+	sb, err := d.inspectSandbox(ctx, cli, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	sb.Driver = d.Name()
+	sb.Capabilities = d.Capabilities()
+	return sb, nil
 }
 
 func (d *DockerDriver) client() (*client.Client, error) {
@@ -364,9 +403,12 @@ func (d *DockerDriver) inspectSandbox(ctx context.Context, cli *client.Client, s
 	}
 
 	sb := &Sandbox{
-		ID:          sandboxID,
-		ContainerID: inspect.ID,
-		Status:      StatusStopped,
+		ID:           sandboxID,
+		ContainerID:  inspect.ID,
+		Driver:       d.Name(),
+		Status:       StatusStopped,
+		HealthStatus: "stopped",
+		Capabilities: d.Capabilities(),
 	}
 
 	if inspect.Config != nil {
@@ -393,6 +435,22 @@ func (d *DockerDriver) inspectSandbox(ctx context.Context, cli *client.Client, s
 	if bindings, ok := inspect.NetworkSettings.Ports[nat.Port(containerRPCPort)]; ok && len(bindings) > 0 {
 		sb.RPCEndpoint = fmt.Sprintf("http://127.0.0.1:%s", bindings[0].HostPort)
 		fmt.Sscanf(bindings[0].HostPort, "%d", &sb.RPCPort)
+	}
+	if inspect.State != nil {
+		switch {
+		case inspect.State.Running:
+			sb.Status = StatusRunning
+			sb.HealthStatus = "starting"
+		case inspect.State.Status == "created" || inspect.State.Status == "exited":
+			sb.Status = StatusStopped
+			sb.HealthStatus = "stopped"
+		case inspect.State.Dead:
+			sb.Status = StatusDestroyed
+			sb.HealthStatus = "destroyed"
+		default:
+			sb.Status = StatusError
+			sb.HealthStatus = "error"
+		}
 	}
 
 	return sb, nil

@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
-func TestManagerPersistsRegistry(t *testing.T) {
+func TestManagerPersistsViaStore(t *testing.T) {
 	t.Parallel()
 
-	registryDir := t.TempDir()
+	store := NewMemoryStore()
 	driver := &fakeRuntimeDriver{
 		createSandbox: &Sandbox{
 			ID:          "sb-test01",
@@ -21,7 +22,7 @@ func TestManagerPersistsRegistry(t *testing.T) {
 		},
 	}
 
-	manager := NewManagerWithRegistryDir(driver, registryDir)
+	manager := NewManagerWithOptions(driver, ManagerOptions{Store: store})
 	created, err := manager.Create(context.Background(), SandboxConfig{
 		Image:       "primitivebox-sandbox:latest",
 		MountSource: t.TempDir(),
@@ -30,10 +31,10 @@ func TestManagerPersistsRegistry(t *testing.T) {
 		t.Fatalf("create sandbox: %v", err)
 	}
 
-	reloaded := NewManagerWithRegistryDir(driver, registryDir)
-	got, ok := reloaded.Get(created.ID)
+	another := NewManagerWithOptions(driver, ManagerOptions{Store: store})
+	got, ok := another.Get(created.ID)
 	if !ok {
-		t.Fatalf("expected sandbox %s to reload from registry", created.ID)
+		t.Fatalf("expected sandbox %s to reload from store", created.ID)
 	}
 	if got.ContainerID != "ctr-123" {
 		t.Fatalf("expected container id ctr-123, got %s", got.ContainerID)
@@ -96,6 +97,17 @@ func (f *fakeRuntimeDriver) Exec(ctx context.Context, sandboxID string, cmd Exec
 	return &ExecResult{ExitCode: 0}, nil
 }
 
+func (f *fakeRuntimeDriver) Inspect(ctx context.Context, sandboxID string) (*Sandbox, error) {
+	sb := cloneSandbox(f.createSandbox)
+	if sb == nil {
+		sb = &Sandbox{ID: sandboxID}
+	}
+	if status, ok := f.statuses[sandboxID]; ok {
+		sb.Status = status
+	}
+	return sb, nil
+}
+
 func (f *fakeRuntimeDriver) Status(ctx context.Context, sandboxID string) (SandboxStatus, error) {
 	if status, ok := f.statuses[sandboxID]; ok {
 		return status, nil
@@ -103,7 +115,8 @@ func (f *fakeRuntimeDriver) Status(ctx context.Context, sandboxID string) (Sandb
 	return StatusStopped, nil
 }
 
-func (f *fakeRuntimeDriver) Name() string { return "fake" }
+func (f *fakeRuntimeDriver) Capabilities() []RuntimeCapability { return nil }
+func (f *fakeRuntimeDriver) Name() string                      { return "fake" }
 
 func TestSandboxJSONRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -127,5 +140,57 @@ func TestSandboxJSONRoundTrip(t *testing.T) {
 	}
 	if roundTrip.ContainerID != sb.ContainerID || roundTrip.RPCPort != sb.RPCPort {
 		t.Fatalf("unexpected round trip sandbox: %+v", roundTrip)
+	}
+}
+
+func TestManagerTouchAndReapExpired(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	driver := &fakeRuntimeDriver{
+		createSandbox: &Sandbox{
+			ID:     "sb-expiring",
+			Status: StatusStopped,
+		},
+		statuses: map[string]SandboxStatus{
+			"sb-expiring": StatusStopped,
+		},
+	}
+	manager := NewManagerWithOptions(driver, ManagerOptions{Store: store})
+	sb, err := manager.Create(context.Background(), SandboxConfig{
+		Driver:      "fake",
+		MountSource: t.TempDir(),
+		Lifecycle: LifecyclePolicy{
+			TTLSeconds:     1,
+			IdleTTLSeconds: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+
+	if err := manager.Touch(context.Background(), sb.ID); err != nil {
+		t.Fatalf("touch sandbox: %v", err)
+	}
+	touched, ok := manager.Get(sb.ID)
+	if !ok || touched.ExpiresAt == 0 {
+		t.Fatalf("expected touched sandbox to have expires_at, got %+v", touched)
+	}
+
+	seeded := cloneSandbox(touched)
+	seeded.ExpiresAt = time.Now().Add(-time.Minute).Unix()
+	if err := store.Upsert(context.Background(), seeded); err != nil {
+		t.Fatalf("seed expired sandbox: %v", err)
+	}
+
+	reaped, err := manager.ReapExpired(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("reap expired: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("expected 1 reaped sandbox, got %d", reaped)
+	}
+	if _, ok := manager.Get(sb.ID); ok {
+		t.Fatalf("expected sandbox %s to be deleted", sb.ID)
 	}
 }

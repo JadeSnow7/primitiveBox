@@ -96,7 +96,27 @@ func (r *Registry) RegisterDefaults(workspaceDir string, options Options) {
 
 	// Code primitives
 	r.MustRegister(NewCodeSearch(workspaceDir))
+	r.MustRegister(NewCodeSymbols(workspaceDir))
 
 	// Verify primitives
 	r.MustRegister(NewVerifyTest(workspaceDir, options))
+
+	// Macro / compound primitives
+	r.MustRegister(NewMacroSafeEdit(workspaceDir, options))
+
+	// FS extended primitives
+	r.MustRegister(NewFSDiff(workspaceDir))
+}
+
+// RegisterSandboxExtras registers sandbox-only primitives that must not be
+// exposed in host workspace mode.
+func (r *Registry) RegisterSandboxExtras(workspaceDir string, options Options) {
+	r.MustRegister(NewDBSchema(workspaceDir))
+	r.MustRegister(NewDBQueryReadonly(workspaceDir))
+
+	manager := NewBrowserSessionManager(options)
+	r.MustRegister(NewBrowserGoto(workspaceDir, manager, options))
+	r.MustRegister(NewBrowserExtract(workspaceDir, manager, options))
+	r.MustRegister(NewBrowserClick(workspaceDir, manager, options))
+	r.MustRegister(NewBrowserScreenshot(workspaceDir, manager, options))
 }

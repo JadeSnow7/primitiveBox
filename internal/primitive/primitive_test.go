@@ -168,7 +168,7 @@ func TestStateRestoreRestoresTrackedAndIgnoredFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create checkpoint: %v", err)
 	}
-	checkpoint := decodeResult[checkpointResult](t, checkpointCallResult)
+	checkpoint := decodeResult[CheckpointResult](t, checkpointCallResult)
 
 	if err := os.WriteFile(file, []byte("after\n"), 0o644); err != nil {
 		t.Fatalf("rewrite file: %v", err)
@@ -189,7 +189,7 @@ func TestStateRestoreRestoresTrackedAndIgnoredFiles(t *testing.T) {
 		t.Fatalf("restore checkpoint: %v", err)
 	}
 
-	restore := decodeResult[restoreResult](t, restoreCallResult)
+	restore := decodeResult[RestoreResult](t, restoreCallResult)
 	content, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatalf("read restored file: %v", err)

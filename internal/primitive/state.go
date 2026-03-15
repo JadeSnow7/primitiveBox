@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"primitivebox/internal/eventing"
 )
 
 // --------------------------------------------------------------------------
@@ -39,10 +41,10 @@ type checkpointParams struct {
 	Label string `json:"label,omitempty"`
 }
 
-type checkpointResult struct {
+type CheckpointResult struct {
 	CheckpointID string `json:"checkpoint_id"`
 	Timestamp    string `json:"timestamp"`
-	Label        string `json:"label"`
+	Label        string `json:"label,omitempty"`
 }
 
 func (s *StateCheckpoint) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
@@ -81,13 +83,21 @@ func (s *StateCheckpoint) Execute(ctx context.Context, params json.RawMessage) (
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	result := CheckpointResult{
+		CheckpointID: strings.TrimSpace(hash),
+		Timestamp:    now,
+		Label:        label,
+	}
+	eventing.Emit(ctx, eventing.Event{
+		Type:    "checkpoint.created",
+		Source:  "primitive",
+		Method:  s.Name(),
+		Message: label,
+		Data:    eventing.MustJSON(result),
+	})
 
 	return Result{
-		Data: checkpointResult{
-			CheckpointID: strings.TrimSpace(hash),
-			Timestamp:    now,
-			Label:        label,
-		},
+		Data: result,
 	}, nil
 }
 
@@ -118,7 +128,7 @@ type restoreParams struct {
 	CheckpointID string `json:"checkpoint_id"`
 }
 
-type restoreResult struct {
+type RestoreResult struct {
 	RestoredTo    string   `json:"restored_to"`
 	FilesChanged  int      `json:"files_changed"`
 	RestoredFiles []string `json:"restored_files,omitempty"`
@@ -161,13 +171,20 @@ func (s *StateRestore) Execute(ctx context.Context, params json.RawMessage) (Res
 		return Result{}, &PrimitiveError{Code: ErrExecution, Message: "restore failed: " + err.Error()}
 	}
 
-	return Result{
-		Data: restoreResult{
-			RestoredTo:    resolvedTarget,
-			FilesChanged:  len(restoredFiles),
-			RestoredFiles: restoredFiles,
-		},
-	}, nil
+	result := RestoreResult{
+		RestoredTo:    resolvedTarget,
+		FilesChanged:  len(restoredFiles),
+		RestoredFiles: restoredFiles,
+	}
+	eventing.Emit(ctx, eventing.Event{
+		Type:    "checkpoint.restored",
+		Source:  "primitive",
+		Method:  s.Name(),
+		Message: resolvedTarget,
+		Data:    eventing.MustJSON(result),
+	})
+
+	return Result{Data: result}, nil
 }
 
 // --------------------------------------------------------------------------
@@ -215,10 +232,7 @@ func (s *StateList) Execute(ctx context.Context, params json.RawMessage) (Result
 		if len(parts) < 3 {
 			continue
 		}
-		label := parts[1]
-		if strings.HasPrefix(label, "checkpoint: ") {
-			label = strings.TrimPrefix(label, "checkpoint: ")
-		}
+		label := strings.TrimPrefix(parts[1], "checkpoint: ")
 		checkpoints = append(checkpoints, checkpointEntry{
 			ID:        parts[0],
 			Label:     label,

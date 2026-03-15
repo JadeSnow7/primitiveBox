@@ -1,4 +1,4 @@
-.PHONY: build test clean run sdk-test sandbox-image demo
+.PHONY: build test clean run sdk-test sandbox-image sandbox-browser-image ui-build demo
 
 build:
 	go build -o bin/pb ./cmd/pb/
@@ -12,8 +12,15 @@ test:
 sdk-test:
 	python3 -m pytest sdk/python/tests -q
 
+ui-build:
+	cd cmd/pb-ui && npm run build
+
 sandbox-image: build
+	GOOS=linux GOARCH=arm64 go build -o bin/pb-linux-arm64 ./cmd/pb
 	docker build -f testdata/docker/Dockerfile -t primitivebox-sandbox:latest .
+
+sandbox-browser-image: sandbox-image
+	docker build -f testdata/docker/browser.Dockerfile -t primitivebox-sandbox-browser:latest .
 
 demo:
 	@echo "1. make sandbox-image"

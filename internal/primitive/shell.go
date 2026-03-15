@@ -1,13 +1,18 @@
 package primitive
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
+
+	"primitivebox/internal/eventing"
 )
 
 // --------------------------------------------------------------------------
@@ -123,12 +128,37 @@ func (s *ShellExec) Execute(ctx context.Context, params json.RawMessage) (Result
 		cmd.Env = env
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
 
 	start := time.Now()
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+	eventing.Emit(ctx, eventing.Event{
+		Type:    "shell.started",
+		Source:  "primitive",
+		Method:  s.Name(),
+		Message: p.Command,
+		Data: eventing.MustJSON(map[string]any{
+			"command": p.Command,
+		}),
+	})
+
+	var stdout, stderr bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go streamPipe(ctx, &wg, "stdout", stdoutPipe, &stdout, s.Name())
+	go streamPipe(ctx, &wg, "stderr", stderrPipe, &stderr, s.Name())
+
+	err = cmd.Wait()
+	wg.Wait()
 	duration := time.Since(start)
 
 	exitCode := 0
@@ -152,6 +182,13 @@ func (s *ShellExec) Execute(ctx context.Context, params json.RawMessage) (Result
 		DurationMs: duration.Milliseconds(),
 		TimedOut:   timedOut,
 	}
+	eventing.Emit(ctx, eventing.Event{
+		Type:    "shell.completed",
+		Source:  "primitive",
+		Method:  s.Name(),
+		Message: fmt.Sprintf("exit=%d", exitCode),
+		Data:    eventing.MustJSON(result),
+	})
 
 	return Result{
 		Data:     result,
@@ -166,4 +203,28 @@ func truncateOutput(s string, maxLen int) string {
 	}
 	half := maxLen / 2
 	return s[:half] + "\n... [truncated] ...\n" + s[len(s)-half:]
+}
+
+func streamPipe(ctx context.Context, wg *sync.WaitGroup, stream string, reader io.Reader, dest *bytes.Buffer, method string) {
+	defer wg.Done()
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if dest.Len() > 0 {
+			dest.WriteByte('\n')
+		}
+		dest.WriteString(line)
+		eventing.Emit(ctx, eventing.Event{
+			Type:    "shell.output",
+			Source:  "primitive",
+			Method:  method,
+			Stream:  stream,
+			Message: line,
+			Data: eventing.MustJSON(map[string]any{
+				"chunk": line,
+			}),
+		})
+	}
 }

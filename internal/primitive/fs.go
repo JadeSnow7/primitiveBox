@@ -1,12 +1,16 @@
 package primitive
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"primitivebox/internal/eventing"
 )
 
 // --------------------------------------------------------------------------
@@ -150,7 +154,7 @@ type fsWriteParams struct {
 	CreateDirs bool   `json:"create_dirs,omitempty"`
 }
 
-type fsWriteResult struct {
+type FSWriteResult struct {
 	BytesWritten int    `json:"bytes_written"`
 	Diff         string `json:"diff,omitempty"`
 }
@@ -216,7 +220,7 @@ func (f *FSWrite) Execute(ctx context.Context, params json.RawMessage) (Result, 
 	diff := generateSimpleDiff(oldContent, newContent)
 
 	return Result{
-		Data: fsWriteResult{
+		Data: FSWriteResult{
 			BytesWritten: len(newContent),
 			Diff:         diff,
 		},
@@ -385,4 +389,109 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// --------------------------------------------------------------------------
+// fs.diff — Show uncommitted workspace changes against the last Git checkpoint
+// --------------------------------------------------------------------------
+
+type FSDiff struct {
+	resolver workspacePathResolver
+}
+
+func NewFSDiff(workspaceDir string) *FSDiff {
+	return &FSDiff{resolver: newWorkspacePathResolver(workspaceDir)}
+}
+
+func (f *FSDiff) Name() string     { return "fs.diff" }
+func (f *FSDiff) Category() string { return "fs" }
+func (f *FSDiff) Schema() Schema {
+	return Schema{
+		Name:        "fs.diff",
+		Description: "Show uncommitted workspace changes as a unified diff against the last Git checkpoint (HEAD)",
+		Input: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"path":{"type":"string","description":"Optional file or directory path to diff (relative to workspace). Defaults to whole workspace."},
+				"staged":{"type":"boolean","description":"If true, show staged diff (index vs HEAD). Default: working tree vs HEAD."}
+			}
+		}`),
+		Output: json.RawMessage(`{"type":"object","properties":{"diff":{"type":"string"},"changed_files":{"type":"array"},"has_changes":{"type":"boolean"}}}`),
+	}
+}
+
+type fsDiffParams struct {
+	Path   string `json:"path,omitempty"`
+	Staged bool   `json:"staged,omitempty"`
+}
+
+func (f *FSDiff) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
+	var p fsDiffParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "invalid params: " + err.Error()}
+	}
+
+	workspaceDir := f.resolver.Root()
+
+	// Check for git
+	gitArgs := []string{"diff", "HEAD", "--unified=3"}
+	if p.Staged {
+		gitArgs = []string{"diff", "--cached", "--unified=3"}
+	}
+
+	if p.Path != "" {
+		absPath, err := f.resolver.Resolve(p.Path)
+		if err != nil {
+			return Result{}, err
+		}
+		gitArgs = append(gitArgs, "--", absPath)
+	}
+
+	diffCmd := exec.CommandContext(ctx, "git", gitArgs...)
+	diffCmd.Dir = workspaceDir
+	var diffOut, diffErr bytes.Buffer
+	diffCmd.Stdout = &diffOut
+	diffCmd.Stderr = &diffErr
+	if err := diffCmd.Run(); err != nil && diffErr.Len() > 0 {
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: "git diff failed: " + diffErr.String()}
+	}
+
+	// Get list of changed files
+	nameOnlyArgs := []string{"diff", "HEAD", "--name-only"}
+	if p.Staged {
+		nameOnlyArgs = []string{"diff", "--cached", "--name-only"}
+	}
+	namesCmd := exec.CommandContext(ctx, "git", nameOnlyArgs...)
+	namesCmd.Dir = workspaceDir
+	var namesOut bytes.Buffer
+	namesCmd.Stdout = &namesOut
+	_ = namesCmd.Run()
+
+	changedFiles := []string{}
+	for _, file := range strings.Split(namesOut.String(), "\n") {
+		file = strings.TrimSpace(file)
+		if file != "" {
+			changedFiles = append(changedFiles, file)
+		}
+	}
+
+	diffStr := diffOut.String()
+	if len(diffStr) > 32000 {
+		diffStr = diffStr[:32000] + "\n... (truncated)"
+	}
+
+	payload := map[string]any{
+		"diff":          diffStr,
+		"changed_files": changedFiles,
+		"has_changes":   len(changedFiles) > 0,
+	}
+	eventing.Emit(ctx, eventing.Event{
+		Type:    "fs.diff",
+		Source:  "primitive",
+		Method:  f.Name(),
+		Message: fmt.Sprintf("%d changed files", len(changedFiles)),
+		Data:    eventing.MustJSON(payload),
+	})
+
+	return Result{Data: payload}, nil
 }

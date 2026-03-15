@@ -1,0 +1,1 @@
+{"timestamp":"2026-03-15T09:45:01.1517Z","method":"sandbox.rpc","input":{"jsonrpc":"2.0","method":"browser.goto","params":{"url":"http://host.docker.internal:64018"},"id":"browser.goto"},"duration":"154.007667ms","metadata":{"sandbox_id":"sb-5bb62911","target_rpc":"http://127.0.0.1:64022/rpc"}}
