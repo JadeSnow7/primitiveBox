@@ -333,24 +333,46 @@ func (m *BrowserSessionManager) create() (*browserSession, error) {
 	if err != nil {
 		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
 	}
+	browserCtx, cancel, profileDir, err := newBrowserRootContext(executable)
+	if err != nil {
+		return nil, err
+	}
+	session := &browserSession{
+		id:         "browser-" + uuid.New().String()[:8],
+		ctx:        browserCtx,
+		cancel:     cancel,
+		lastUsedAt: time.Now().UTC(),
+		profileDir: profileDir,
+	}
+	if err := chromedp.Run(browserCtx); err != nil {
+		cancel()
+		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[session.id] = session
+	return session, nil
+}
+
+func newBrowserRootContext(executable string) (context.Context, context.CancelFunc, string, error) {
 	profileDir, err := os.MkdirTemp("", "primitivebox-browser-*")
 	if err != nil {
-		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+		return nil, nil, "", &PrimitiveError{Code: ErrExecution, Message: err.Error()}
 	}
 	configDir := profileDir + "/config"
 	cacheDir := profileDir + "/cache"
 	runtimeDir := profileDir + "/runtime"
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		_ = os.RemoveAll(profileDir)
-		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+		return nil, nil, "", &PrimitiveError{Code: ErrExecution, Message: err.Error()}
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		_ = os.RemoveAll(profileDir)
-		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+		return nil, nil, "", &PrimitiveError{Code: ErrExecution, Message: err.Error()}
 	}
 	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
 		_ = os.RemoveAll(profileDir)
-		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+		return nil, nil, "", &PrimitiveError{Code: ErrExecution, Message: err.Error()}
 	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(),
 		append(chromedp.DefaultExecAllocatorOptions[:],
@@ -378,32 +400,12 @@ func (m *BrowserSessionManager) create() (*browserSession, error) {
 		)...,
 	)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	tabCtx, tabCancel := chromedp.NewContext(browserCtx)
 	cancel := func() {
-		tabCancel()
 		browserCancel()
 		allocCancel()
 		_ = os.RemoveAll(profileDir)
 	}
-	session := &browserSession{
-		id:         "browser-" + uuid.New().String()[:8],
-		ctx:        tabCtx,
-		cancel:     cancel,
-		lastUsedAt: time.Now().UTC(),
-		profileDir: profileDir,
-	}
-	if err := chromedp.Run(browserCtx); err != nil {
-		cancel()
-		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
-	}
-	if err := chromedp.Run(tabCtx); err != nil {
-		cancel()
-		return nil, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sessions[session.id] = session
-	return session, nil
+	return browserCtx, cancel, profileDir, nil
 }
 
 func emitBrowserProgress(ctx context.Context, method, message string, payload map[string]any) {

@@ -18,6 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PB_BIN = REPO_ROOT / "bin" / "pb"
 
 
+def reserve_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def wait_for_http(url: str, timeout_s: int = 30) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -63,7 +69,7 @@ def collect_sse(base_url: str, seconds: int = 8) -> dict[str, int]:
 
 
 def main() -> int:
-    port = int(os.environ.get("PB_UI_PORT", "8080"))
+    port = int(os.environ["PB_UI_PORT"]) if "PB_UI_PORT" in os.environ else reserve_port()
     base_url = f"http://127.0.0.1:{port}"
     server = subprocess.Popen(
         [str(PB_BIN), "server", "start", "--workspace", str(REPO_ROOT), "--port", str(port), "--ui"],

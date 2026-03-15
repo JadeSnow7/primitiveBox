@@ -257,5 +257,87 @@ label {
 
   .console-line {
     grid-template-columns: 1fr;
-  }
 }
+
+}
+
+.settings-btn {
+  background: rgba(121, 216, 255, 0.1);
+  border: 1px solid rgba(121, 216, 255, 0.3);
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-btn:hover {
+  background: rgba(121, 216, 255, 0.2);
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.settings-modal {
+  background: var(--bg);
+  border: 1px solid var(--panel-edge);
+  border-radius: 20px;
+  padding: 24px;
+  width: 400px;
+  max-width: 90vw;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 10px 14px;
+  border-radius: 8px;
+  color: var(--text);
+  font-family: monospace;
+  font-size: 1rem;
+  width: 100%;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(121, 216, 255, 0.05);
+}
+
+.settings-helper {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.close-btn:hover {
+  color: var(--text);
+}
+

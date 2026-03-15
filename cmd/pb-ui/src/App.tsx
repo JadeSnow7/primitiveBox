@@ -38,6 +38,13 @@ export function App() {
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [selectedSandbox, setSelectedSandbox] = useState<string>("");
   const [connectionState, setConnectionState] = useState("connecting");
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("PB_API_KEY") || "");
+
+  const saveApiKey = (key: string) => {
+    setApiKey(key);
+    localStorage.setItem("PB_API_KEY", key);
+  };
 
   useEffect(() => {
     void fetch("/api/v1/sandboxes")
@@ -110,7 +117,12 @@ export function App() {
     <main className="inspector-shell">
       <section className="hero-panel">
         <div>
-          <p className="eyebrow">PrimitiveBox Control Plane</p>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <p className="eyebrow">PrimitiveBox Control Plane</p>
+            <button className="settings-btn" onClick={() => setShowSettings(true)}>
+              Settings
+            </button>
+          </div>
           <h1>Telemetry that reads like a flight recorder.</h1>
           <p className="hero-copy">
             Watch sandbox lifecycles, RPC edges, browser automation, and read-only database access flow through the
@@ -230,6 +242,28 @@ export function App() {
           </div>
         </section>
       </section>
+
+      {showSettings && (
+        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-header">
+              <h2>Settings</h2>
+              <button className="close-btn" onClick={() => setShowSettings(false)}>×</button>
+            </div>
+            <div className="settings-content">
+              <label>API Key</label>
+              <input 
+                type="password" 
+                value={apiKey} 
+                onChange={(e) => saveApiKey(e.target.value)} 
+                placeholder="sk-..."
+                className="settings-input"
+              />
+              <p className="settings-helper">Your API key is stored locally in your browser.</p>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

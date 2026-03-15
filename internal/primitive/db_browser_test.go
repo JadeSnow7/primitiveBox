@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 func TestDBQueryReadonlyRejectsMultipleStatements(t *testing.T) {
@@ -86,5 +89,46 @@ func TestBrowserValidationAndMissingSession(t *testing.T) {
 	})
 	if _, err := primitive.Execute(context.Background(), payload); err == nil {
 		t.Fatalf("expected missing browser session to fail")
+	}
+}
+
+func TestBrowserRootContextSupportsTimedActions(t *testing.T) {
+	t.Parallel()
+
+	executable, err := findBrowserExecutable()
+	if err != nil {
+		t.Skipf("chromium not available: %v", err)
+	}
+
+	browserCtx, cancel, _, err := newBrowserRootContext(executable)
+	if err != nil {
+		t.Fatalf("create browser root context: %v", err)
+	}
+	defer cancel()
+
+	if err := chromedp.Run(browserCtx); err != nil {
+		t.Skipf("chromium not runnable in test environment: %v", err)
+	}
+	root := chromedp.FromContext(browserCtx)
+	if root == nil || root.Browser == nil {
+		t.Fatalf("expected root browser context to have an allocated browser")
+	}
+
+	runCtx, runCancel := context.WithTimeout(browserCtx, 5*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate("data:text/html,<h1>ok</h1>")); err != nil {
+		t.Fatalf("run timed browser action: %v", err)
+	}
+	child := chromedp.FromContext(runCtx)
+	if child == nil || child.Browser == nil {
+		t.Fatalf("expected timed child context to inherit an allocated browser")
+	}
+	if child.Browser != root.Browser {
+		t.Fatalf("expected timed child context to reuse the existing browser instance")
+	}
+	runCtx2, runCancel2 := context.WithTimeout(browserCtx, 5*time.Second)
+	defer runCancel2()
+	if err := chromedp.Run(runCtx2, chromedp.Navigate("data:text/html,<h1>again</h1>")); err != nil {
+		t.Fatalf("rerun timed browser action: %v", err)
 	}
 }
