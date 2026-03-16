@@ -4,12 +4,12 @@ package rpc
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io/fs"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +22,7 @@ import (
 	"primitivebox/internal/audit"
 	"primitivebox/internal/eventing"
 	"primitivebox/internal/primitive"
+	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
 )
 
@@ -244,6 +245,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 	}
 
 	ctx := eventing.WithSink(r.Context(), eventing.NewMultiSink(sinks...))
+	ctx, traceRecorder := runtrace.WithRecorder(ctx)
 	if s.eventBus != nil {
 		s.eventBus.Publish(ctx, eventing.Event{
 			Type:    "rpc.started",
@@ -280,6 +282,14 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 	}
 
 	if err != nil {
+		if traceRecord, ok := traceRecorder.Record(); ok {
+			if encoded, encodeErr := runtrace.EncodeHeader(traceRecord); encodeErr == nil {
+				w.Header().Set(runtrace.HeaderTraceStep, encoded)
+			}
+			if store, ok := s.eventStore.(runtrace.Store); ok {
+				_ = store.RecordTraceStep(ctx, traceRecord)
+			}
+		}
 		if stream {
 			s.writeStreamEvent(w, "error", map[string]any{
 				"method":  req.Method,
@@ -292,6 +302,14 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 	}
 
 	if stream {
+		if traceRecord, ok := traceRecorder.Record(); ok {
+			if encoded, encodeErr := runtrace.EncodeHeader(traceRecord); encodeErr == nil {
+				w.Header().Set(runtrace.HeaderTraceStep, encoded)
+			}
+			if store, ok := s.eventStore.(runtrace.Store); ok {
+				_ = store.RecordTraceStep(ctx, traceRecord)
+			}
+		}
 		s.writeStreamEvent(w, "completed", map[string]any{
 			"method":      req.Method,
 			"result":      result,
@@ -300,6 +318,14 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 		return
 	}
 
+	if traceRecord, ok := traceRecorder.Record(); ok {
+		if encoded, encodeErr := runtrace.EncodeHeader(traceRecord); encodeErr == nil {
+			w.Header().Set(runtrace.HeaderTraceStep, encoded)
+		}
+		if store, ok := s.eventStore.(runtrace.Store); ok {
+			_ = store.RecordTraceStep(ctx, traceRecord)
+		}
+	}
 	s.writeResponse(w, Response{
 		JSONRPC: "2.0",
 		Result:  result,
@@ -471,6 +497,17 @@ func (s *Server) proxySandboxRequest(w http.ResponseWriter, r *http.Request, san
 		return
 	}
 	defer resp.Body.Close()
+
+	if encoded := resp.Header.Get(runtrace.HeaderTraceStep); encoded != "" {
+		if record, decodeErr := runtrace.DecodeHeader(encoded); decodeErr == nil {
+			if record.SandboxID == "" {
+				record.SandboxID = sandboxID
+			}
+			if store, ok := s.eventStore.(runtrace.Store); ok {
+				_ = store.RecordTraceStep(r.Context(), record)
+			}
+		}
+	}
 
 	_ = s.manager.Touch(r.Context(), sandboxID)
 	copyHeaders(w.Header(), resp.Header)

@@ -153,6 +153,37 @@ func TestVerifyTestSharesShellPolicy(t *testing.T) {
 	assertPrimitiveError(t, err, ErrPermission)
 }
 
+func TestRegistrySchemasExposeEnrichedMetadataAndCompatibilityAlias(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	registry.RegisterDefaults(t.TempDir(), DefaultOptions())
+
+	fsWrite, ok := registry.Schema("fs.write")
+	if !ok {
+		t.Fatalf("expected fs.write schema")
+	}
+	if fsWrite.SideEffect != SideEffectWrite {
+		t.Fatalf("expected fs.write side effect write, got %q", fsWrite.SideEffect)
+	}
+	if !fsWrite.CheckpointRequired {
+		t.Fatalf("expected fs.write checkpoint requirement")
+	}
+	if len(fsWrite.InputSchema) == 0 || len(fsWrite.Input) == 0 {
+		t.Fatalf("expected backward-compatible and canonical input schemas")
+	}
+
+	if _, ok := registry.Schema("test.run"); !ok {
+		t.Fatalf("expected test.run to be registered")
+	}
+	if _, ok := registry.Schema("verify.command"); !ok {
+		t.Fatalf("expected verify.command to be registered")
+	}
+	if _, ok := registry.Schema("verify.test"); !ok {
+		t.Fatalf("expected verify.test compatibility alias to remain registered")
+	}
+}
+
 func TestStateRestoreRestoresTrackedAndIgnoredFiles(t *testing.T) {
 	t.Parallel()
 
@@ -208,6 +239,119 @@ func TestStateRestoreRestoresTrackedAndIgnoredFiles(t *testing.T) {
 	}
 	if !containsPrefix(restore.RestoredFiles, "__pycache__") {
 		t.Fatalf("expected restored_files to include ignored files, got %v", restore.RestoredFiles)
+	}
+}
+
+func TestStateRestorePreservesBranchTipAndCheckpointHistory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.txt")
+	if err := os.WriteFile(file, []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+
+	firstCall, err := NewStateCheckpoint(dir).Execute(context.Background(), mustJSON(t, map[string]any{
+		"label": "first",
+	}))
+	if err != nil {
+		t.Fatalf("create first checkpoint: %v", err)
+	}
+	first := decodeResult[CheckpointResult](t, firstCall)
+
+	if err := os.WriteFile(file, []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write second file state: %v", err)
+	}
+	secondCall, err := NewStateCheckpoint(dir).Execute(context.Background(), mustJSON(t, map[string]any{
+		"label": "second",
+	}))
+	if err != nil {
+		t.Fatalf("create second checkpoint: %v", err)
+	}
+	second := decodeResult[CheckpointResult](t, secondCall)
+
+	headBeforeRestore, err := gitOutput(dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("read head before restore: %v", err)
+	}
+
+	if _, err := NewStateRestore(dir).Execute(context.Background(), mustJSON(t, map[string]any{
+		"checkpoint_id": first.CheckpointID,
+	})); err != nil {
+		t.Fatalf("restore first checkpoint: %v", err)
+	}
+
+	content, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if string(content) != "one\n" {
+		t.Fatalf("expected restored content, got %q", string(content))
+	}
+
+	headAfterRestore, err := gitOutput(dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("read head after restore: %v", err)
+	}
+	if strings.TrimSpace(headAfterRestore) != strings.TrimSpace(headBeforeRestore) {
+		t.Fatalf("expected HEAD to stay at branch tip, before=%s after=%s", headBeforeRestore, headAfterRestore)
+	}
+
+	listCall, err := NewStateList(dir).Execute(context.Background(), mustJSON(t, map[string]any{}))
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	list := decodeResult[struct {
+		Checkpoints []checkpointEntry `json:"checkpoints"`
+	}](t, listCall)
+	if len(list.Checkpoints) < 2 {
+		t.Fatalf("expected at least two checkpoints, got %+v", list.Checkpoints)
+	}
+	if list.Checkpoints[0].ID != second.CheckpointID {
+		t.Fatalf("expected newest checkpoint to remain visible, got %+v", list.Checkpoints)
+	}
+}
+
+func TestStateRestoreFailsWhenGitLockExists(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.txt")
+	if err := os.WriteFile(file, []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+
+	checkpointCall, err := NewStateCheckpoint(dir).Execute(context.Background(), mustJSON(t, map[string]any{
+		"label": "locked",
+	}))
+	if err != nil {
+		t.Fatalf("create checkpoint: %v", err)
+	}
+	checkpoint := decodeResult[CheckpointResult](t, checkpointCall)
+
+	if err := os.WriteFile(file, []byte("after\n"), 0o644); err != nil {
+		t.Fatalf("write modified file: %v", err)
+	}
+
+	lockPath := filepath.Join(dir, ".git", "index.lock")
+	if err := os.WriteFile(lockPath, []byte("busy"), 0o644); err != nil {
+		t.Fatalf("create lock file: %v", err)
+	}
+
+	_, err = NewStateRestore(dir).Execute(context.Background(), mustJSON(t, map[string]any{
+		"checkpoint_id": checkpoint.CheckpointID,
+	}))
+	assertPrimitiveError(t, err, ErrExecution)
+	if !strings.Contains(err.Error(), "git repository is busy") {
+		t.Fatalf("expected busy repository error, got %v", err)
+	}
+
+	content, readErr := os.ReadFile(file)
+	if readErr != nil {
+		t.Fatalf("read file after failed restore: %v", readErr)
+	}
+	if string(content) != "after\n" {
+		t.Fatalf("expected file to remain unchanged after lock failure, got %q", string(content))
 	}
 }
 

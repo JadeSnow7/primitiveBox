@@ -164,6 +164,9 @@ func (s *StateRestore) Execute(ctx context.Context, params json.RawMessage) (Res
 	restoredFiles := appendUnique(nil, trackedFiles...)
 	restoredFiles = appendUnique(restoredFiles, untrackedFiles...)
 
+	if err := ensureGitRestoreUnlocked(s.workspaceDir); err != nil {
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: "restore failed: " + err.Error()}
+	}
 	if err := gitExec(s.workspaceDir, "restore", "--source", resolvedTarget, "--staged", "--worktree", "."); err != nil {
 		return Result{}, &PrimitiveError{Code: ErrExecution, Message: "restore failed: " + err.Error()}
 	}
@@ -354,6 +357,19 @@ func previewCleanedFiles(dir string) ([]string, error) {
 	}
 
 	return files, nil
+}
+
+func ensureGitRestoreUnlocked(dir string) error {
+	lockFiles := []string{
+		filepath.Join(dir, ".git", "index.lock"),
+		filepath.Join(dir, ".git", "HEAD.lock"),
+	}
+	for _, lockPath := range lockFiles {
+		if _, err := os.Stat(lockPath); err == nil {
+			return fmt.Errorf("git repository is busy (%s exists)", filepath.Base(lockPath))
+		}
+	}
+	return nil
 }
 
 func appendUnique(dst []string, items ...string) []string {

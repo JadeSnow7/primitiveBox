@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primitivebox/internal/eventing"
+	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
 )
 
@@ -75,6 +76,30 @@ func TestSQLiteStorePersistsSandboxesAndEvents(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Message != "hello" {
 		t.Fatalf("unexpected events: %+v", events)
+	}
+
+	record := runtrace.StepRecord{
+		TaskID:      "task-1",
+		TraceID:     "trace-1",
+		SessionID:   "session-1",
+		AttemptID:   "attempt-1",
+		SandboxID:   sb.ID,
+		StepID:      "step-1",
+		Primitive:   "repo.patch_symbol",
+		DurationMs:  42,
+		FailureKind: "",
+		Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.RecordTraceStep(context.Background(), record); err != nil {
+		t.Fatalf("record trace step: %v", err)
+	}
+
+	traces, err := store.ListTraceSteps(context.Background(), sb.ID, 10)
+	if err != nil {
+		t.Fatalf("list trace steps: %v", err)
+	}
+	if len(traces) != 1 || traces[0].Primitive != "repo.patch_symbol" {
+		t.Fatalf("unexpected trace steps: %+v", traces)
 	}
 }
 

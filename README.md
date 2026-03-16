@@ -1,52 +1,98 @@
 # PrimitiveBox
 
-PrimitiveBox is a host-side JSON-RPC gateway for agent workflows. It supports:
+PrimitiveBox is a checkpointed sandbox runtime for AI agents.
 
-- host workspace primitives at `/rpc`
-- Docker-backed sandboxes that run their own `pb server` inside the container
-- a SQLite-backed control plane for sandbox metadata and inspector events
-- SSE streaming at `/rpc/stream` and `/sandboxes/{id}/rpc/stream`
-- gateway proxy routes such as `/sandboxes/{id}/rpc`
+It is a primitive-based execution system for containerized environments, not just a tool-calling wrapper. PrimitiveBox is built around structured primitives, checkpoint-first side effects, verification before success, and replayable execution traces, with a long-term path toward AI-native applications exposing their own application primitives inside the container.
 
-The current repo now supports local workspace mode, Docker-backed sandboxes, a real Kubernetes runtime driver, sandbox-only `db.*` and `browser.*` primitives, and an embedded Inspector UI.
+## Why PrimitiveBox
 
-## Supported Modes
+Most agent systems stop at “the model can call tools.” PrimitiveBox is trying to make execution itself a first-class runtime concern:
 
-### Host workspace mode
+- primitives are explicit contracts, not loose prompt conventions
+- side effects should be checkpointable before risky work continues
+- success should be verification-driven, not declared by the model
+- failures should be recoverable rather than terminal
+- execution history should be replayable and inspectable
+- sandbox and runtime boundaries should stay explicit
 
-```bash
-./bin/pb server start --workspace ./my-project
-```
+That makes PrimitiveBox meaningfully different from:
 
-Clients call `http://localhost:8080/rpc`.
+- chat-first assistants
+- unconstrained shell automation wrappers
+- prompt-only workflow engines
+- broad “AI platform” narratives without concrete execution semantics
 
-### Docker sandbox gateway mode
+## Execution Model
 
-1. Build the CLI:
+PrimitiveBox currently follows this shape:
+
+`Client -> Host gateway control plane -> Router/runtime driver -> Sandbox pb server -> Primitive execution`
+
+The gateway is the control-plane boundary. It authenticates, validates, persists control-plane state in SQLite, emits events, and routes requests to the correct sandbox endpoint. Sandbox-owned workspace execution happens inside the sandbox-local `pb server`, not on the host gateway.
+
+Core execution ideas:
+
+- structured primitives with explicit JSON contracts
+- sandboxed container execution
+- checkpoint / restore support for workspace state
+- verification-oriented task completion
+- durable event history for streaming, inspection, and replay
+- an architecture that can later separate system primitives from application primitives
+
+## What Works Today
+
+PrimitiveBox already provides a usable execution substrate for agent workflows:
+
+- host workspace mode at `POST /rpc` when the caller explicitly targets the host workspace
+- sandbox mode via `POST /sandboxes/{id}/rpc`, with the gateway proxying to sandbox-local execution
+- Docker-backed sandboxes through the current runtime driver path
+- SQLite-backed control-plane state for sandbox metadata and persisted event history
+- SSE streaming for runtime and primitive execution events
+- built-in primitives including filesystem, shell, code search, state checkpointing, and test verification
+- sync and async Python SDK support for core RPC and streaming flows
+- inspector-oriented APIs over sandboxes, checkpoints, trees, and events
+
+## What Is Experimental
+
+Some areas are intentionally present but still converging:
+
+- the Kubernetes runtime is a real architectural path, but still maturing relative to Docker
+- some sandbox-only primitive families, such as database and browser-oriented execution, are early-stage
+- inspector and UI surfaces exist to support the control plane, but the runtime model remains the priority
+- async convenience parity is improving, but should continue converging with the sync SDK
+
+## What Is Next
+
+The near-term direction is to strengthen PrimitiveBox as an execution runtime before broadening the product surface:
+
+- tighten checkpoint / verify / recover loops around side-effectful work
+- make replay and inspection more useful as first-class runtime features
+- continue hardening runtime routing, lifecycle persistence, and event semantics
+- expand the primitive model carefully rather than accumulating ad hoc tools
+- prepare a clean split between system primitives and future application primitives exposed by AI-native apps
+
+## Quick Start
+
+Build the CLI:
 
 ```bash
 make build
 ```
 
-2. Build the sandbox image:
+Run the host gateway against a local workspace:
+
+```bash
+./bin/pb server start --workspace ./my-project
+```
+
+Create a Docker sandbox:
 
 ```bash
 make sandbox-image
-```
-
-3. Create a sandbox:
-
-```bash
 ./bin/pb sandbox create --driver docker --mount ./my-project --ttl 3600 --network-mode none
 ```
 
-4. Start the host gateway:
-
-```bash
-./bin/pb server start --workspace .
-```
-
-5. Connect from Python:
+Example Python usage:
 
 ```python
 from primitivebox import PrimitiveBoxClient
@@ -54,36 +100,28 @@ from primitivebox import PrimitiveBoxClient
 client = PrimitiveBoxClient("http://localhost:8080", sandbox_id="sb-12345678")
 print(client.health())
 print(client.fs.read("README.md"))
+
 for event in client.shell.stream_exec("printf 'hello\\n'"):
     print(event)
 ```
 
-### Kubernetes sandbox mode
+## Interfaces
 
-PrimitiveBox now exposes a `kubernetes` runtime driver behind the same `pb sandbox create --driver kubernetes ...` CLI surface.
+Primary routes:
 
-The current implementation:
+- `POST /rpc`
+- `POST /rpc/stream`
+- `POST /sandboxes/{id}/rpc`
+- `POST /sandboxes/{id}/rpc/stream`
+- `GET /health`
+- `GET /primitives`
+- `GET /api/v1/sandboxes`
+- `GET /api/v1/sandboxes/{id}`
+- `GET /api/v1/events`
+- `GET /api/v1/events/stream`
 
-- creates Pod, Service, PVC, and optional `NetworkPolicy` resources
-- waits for Pod readiness and then establishes a local `port-forward`
-- persists runtime metadata in the same SQLite control plane
-- supports `pods/exec` and TTL-driven remote cleanup
+Primary CLI commands:
 
-`--mount` is intentionally unsupported for Kubernetes sandboxes in v1; workspaces are PVC-backed.
-
-### Inspector UI
-
-Start the gateway with the embedded SPA:
-
-```bash
-./bin/pb server start --workspace . --ui
-```
-
-Then open `http://localhost:8080/`.
-
-## CLI
-
-- `pb version`
 - `pb server start`
 - `pb sandbox create`
 - `pb sandbox list`
@@ -91,41 +129,7 @@ Then open `http://localhost:8080/`.
 - `pb sandbox stop <id>`
 - `pb sandbox destroy <id>`
 
-Notable `pb sandbox create` flags:
-
-- `--driver docker|kubernetes`
-- `--namespace default`
-- `--ttl 3600`
-- `--idle-ttl 900`
-- `--network-mode none|full|policy`
-- `--network-host example.com`
-- `--network-cidr 10.0.0.0/24`
-- `--network-port 443`
-
-`pb server start` notable flags:
-
-- `--ui`
-
-## HTTP Routes
-
-- `POST /rpc`
-- `POST /rpc/stream`
-- `GET /health`
-- `GET /primitives`
-- `GET /sandboxes`
-- `GET /sandboxes/{id}`
-- `POST /sandboxes/{id}/rpc`
-- `POST /sandboxes/{id}/rpc/stream`
-- `GET /sandboxes/{id}/health`
-- `GET /sandboxes/{id}/primitives`
-- `GET /api/v1/sandboxes`
-- `GET /api/v1/sandboxes/{id}`
-- `GET /api/v1/sandboxes/{id}/tree`
-- `GET /api/v1/sandboxes/{id}/checkpoints`
-- `GET /api/v1/events`
-- `GET /api/v1/events/stream`
-
-## Testing
+## Development Notes
 
 ```bash
 go build ./...
@@ -133,19 +137,7 @@ go test ./...
 python3 -m pytest sdk/python/tests -q
 ```
 
-Docker integration requires local Docker daemon access and a built sandbox image.
+Additional repository guidance lives in:
 
-Browser automation requires the browser-capable sandbox image:
-
-```bash
-make sandbox-browser-image
-```
-
-## Notes
-
-- Sandbox registry is stored at `~/.primitivebox/sandboxes/`.
-- Control-plane state is now stored at `~/.primitivebox/controlplane.db`; legacy JSON registries are imported once on startup.
-- Docker networking currently supports coarse `none/full` intent metadata. Fine-grained allowlists are designed for the Kubernetes driver first.
-- Container-local `pb server` listens on port `8080` and is mapped to a random localhost port.
-- `AsyncPrimitiveBoxClient` is implemented via `httpx`, and both sync/async SDKs now support streaming calls.
-- `db.*` and `browser.*` are sandbox-only by default and are not registered in host workspace mode.
+- [AGENTS.md](/Users/huaodong/TMP/primitivebox/AGENTS.md) for canonical repository intent and architecture rules
+- [CLAUDE.md](/Users/huaodong/TMP/primitivebox/CLAUDE.md) for concise assistant-facing execution guidance

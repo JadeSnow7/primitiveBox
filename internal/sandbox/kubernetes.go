@@ -50,9 +50,9 @@ type KubernetesResourceNames struct {
 
 // KubernetesManifest represents the runtime objects needed for one sandbox.
 type KubernetesManifest struct {
-	Resources     KubernetesResourceNames   `json:"resources"`
-	Pod           *corev1.Pod               `json:"pod"`
-	Service       *corev1.Service           `json:"service"`
+	Resources     KubernetesResourceNames       `json:"resources"`
+	Pod           *corev1.Pod                   `json:"pod"`
+	Service       *corev1.Service               `json:"service"`
 	WorkspacePVC  *corev1.PersistentVolumeClaim `json:"workspace_pvc"`
 	NetworkPolicy *networkingv1.NetworkPolicy   `json:"network_policy,omitempty"`
 }
@@ -384,15 +384,15 @@ func (d *KubernetesDriver) buildManifest(sandboxID, image string, config Sandbox
 				Command: []string{
 					"sh",
 					"-lc",
-					fmt.Sprintf("pb server start --host 0.0.0.0 --workspace %s --port %d --sandbox-mode", defaultString(config.MountTarget, "/workspace"), containerRPCListen),
+					fmt.Sprintf("pb-runtimed --host 0.0.0.0 --workspace %s --port %d --sandbox-id %s", defaultString(config.MountTarget, "/workspace"), containerRPCListen, sandboxID),
 				},
-				Env:                  envVarsFromMap(config.Env),
-				WorkingDir:           defaultString(config.MountTarget, "/workspace"),
-				Ports:                []corev1.ContainerPort{{Name: "rpc", ContainerPort: containerRPCListen}},
-				VolumeMounts:         []corev1.VolumeMount{{Name: "workspace", MountPath: defaultString(config.MountTarget, "/workspace")}},
-				Resources:            buildKubernetesResources(config),
-				ReadinessProbe:       httpProbe("/health", containerRPCListen),
-				LivenessProbe:        httpProbe("/health", containerRPCListen),
+				Env:                      envVarsFromMap(config.Env),
+				WorkingDir:               defaultString(config.MountTarget, "/workspace"),
+				Ports:                    []corev1.ContainerPort{{Name: "rpc", ContainerPort: containerRPCListen}},
+				VolumeMounts:             []corev1.VolumeMount{{Name: "workspace", MountPath: defaultString(config.MountTarget, "/workspace")}},
+				Resources:                buildKubernetesResources(config),
+				ReadinessProbe:           httpProbe("/health", containerRPCListen),
+				LivenessProbe:            httpProbe("/health", containerRPCListen),
 				TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 			}},
 			Volumes: []corev1.Volume{{

@@ -35,18 +35,28 @@ type Primitive interface {
 
 // Schema describes the input/output contract of a primitive.
 type Schema struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Input       json.RawMessage `json:"input"`  // JSON Schema for params
-	Output      json.RawMessage `json:"output"` // JSON Schema for result
+	Name               string          `json:"name"`
+	Namespace          string          `json:"namespace,omitempty"`
+	Description        string          `json:"description"`
+	Input              json.RawMessage `json:"input,omitempty"`  // Backward-compatible alias for input_schema
+	Output             json.RawMessage `json:"output,omitempty"` // Backward-compatible alias for output_schema
+	InputSchema        json.RawMessage `json:"input_schema,omitempty"`
+	OutputSchema       json.RawMessage `json:"output_schema,omitempty"`
+	SideEffect         string          `json:"side_effect,omitempty"`
+	CheckpointRequired bool            `json:"checkpoint_required,omitempty"`
+	TimeoutMs          int             `json:"timeout_ms,omitempty"`
+	Scope              string          `json:"scope,omitempty"`
+	VerifierHint       string          `json:"verifier_hint,omitempty"`
+	Source             string          `json:"source,omitempty"`
+	Adapter            string          `json:"adapter,omitempty"`
 }
 
 // Result wraps the structured output of a primitive execution.
 type Result struct {
-	Data     any    `json:"data"`               // Structured result data
-	Duration int64  `json:"duration_ms"`         // Execution time in ms
-	Diff     string `json:"diff,omitempty"`      // File diff if applicable
-	Warning  string `json:"warning,omitempty"`   // Non-fatal warning
+	Data     any    `json:"data"`              // Structured result data
+	Duration int64  `json:"duration_ms"`       // Execution time in ms
+	Diff     string `json:"diff,omitempty"`    // File diff if applicable
+	Warning  string `json:"warning,omitempty"` // Non-fatal warning
 }
 
 // --------------------------------------------------------------------------
@@ -58,8 +68,8 @@ type ExecContext struct {
 	SandboxID    string            `json:"sandbox_id"`
 	WorkspaceDir string            `json:"workspace_dir"`
 	Env          map[string]string `json:"env,omitempty"`
-	Timeout      int               `json:"timeout_s"`      // Default timeout in seconds
-	DryRun       bool              `json:"dry_run"`         // If true, simulate only
+	Timeout      int               `json:"timeout_s"` // Default timeout in seconds
+	DryRun       bool              `json:"dry_run"`   // If true, simulate only
 }
 
 // ContextKey is used to store ExecContext in context.Context.
@@ -95,11 +105,11 @@ func (e *PrimitiveError) Error() string {
 type ErrorCode string
 
 const (
-	ErrNotFound       ErrorCode = "NOT_FOUND"
-	ErrPermission     ErrorCode = "PERMISSION_DENIED"
-	ErrTimeout        ErrorCode = "TIMEOUT"
-	ErrValidation     ErrorCode = "VALIDATION_ERROR"
-	ErrExecution      ErrorCode = "EXECUTION_ERROR"
-	ErrResourceLimit  ErrorCode = "RESOURCE_LIMIT"
-	ErrInternal       ErrorCode = "INTERNAL_ERROR"
+	ErrNotFound      ErrorCode = "NOT_FOUND"
+	ErrPermission    ErrorCode = "PERMISSION_DENIED"
+	ErrTimeout       ErrorCode = "TIMEOUT"
+	ErrValidation    ErrorCode = "VALIDATION_ERROR"
+	ErrExecution     ErrorCode = "EXECUTION_ERROR"
+	ErrResourceLimit ErrorCode = "RESOURCE_LIMIT"
+	ErrInternal      ErrorCode = "INTERNAL_ERROR"
 )

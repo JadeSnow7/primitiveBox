@@ -1,6 +1,40 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides a concise execution guide for Claude Code when working in this repository.
+It is derived from [AGENTS.md](/Users/huaodong/TMP/primitivebox/AGENTS.md), which is the canonical source of repository intent, architecture rules, and compatibility constraints.
+
+## Repository Direction
+
+PrimitiveBox is a checkpointed, verifiable, replayable execution runtime for AI agents.
+It is evolving toward an AI-native system substrate where AI interacts with containerized systems and future AI-native applications through structured primitives.
+
+Do not treat this repository as:
+
+- a generic chat assistant
+- a prompt-only workflow engine
+- an unconstrained shell wrapper
+- a UI-first product whose runtime semantics can be weakened for convenience
+
+## Before Implementing
+
+Before writing code, explicitly align the change with the execution model:
+
+1. Classify the work as one of:
+   - runtime
+   - primitive layer
+   - sandbox management
+   - orchestrator semantics
+   - future application-primitive extensibility
+2. Explain how it strengthens at least one of:
+   - primitive clarity
+   - sandbox safety
+   - checkpoint / restore semantics
+   - verification discipline
+   - recovery behavior
+   - replayability
+3. Prefer minimal, contract-first changes over convenience abstractions.
+4. If the change risks moving sandbox-owned execution onto the host gateway, stop and redesign it.
+5. If a public contract changes, update the affected SDK/tests/docs in the same iteration.
 
 ## Commands
 
@@ -16,64 +50,52 @@ make clean          # Remove bin/ and .primitivebox/
 ```
 
 Run a single Go test:
+
 ```bash
 go test ./internal/primitive/... -run TestFSRead -v
 ```
 
-## Architecture
+## Architecture Snapshot
 
-PrimitiveBox is a host-side JSON-RPC 2.0 gateway that exposes AI-native primitives (filesystem, shell, code search, state checkpoints, test verification) to agent workflows. It supports two modes:
-
-1. **Host workspace mode**: `pb server start --workspace <dir>` serves primitives directly against a local workspace directory.
-2. **Docker sandbox gateway mode**: `pb sandbox create` provisions a Docker container running its own internal `pb server` (on port 8080). The host gateway proxies RPC calls to the container's internal server via `/sandboxes/{id}/rpc`.
-3. **Control-plane / streaming mode**: the gateway now persists sandbox metadata + inspector events in SQLite and exposes SSE/inspector APIs alongside JSON-RPC.
-
-### Key Packages & Structure
+PrimitiveBox currently exposes its runtime through a host-side gateway, but the gateway is only the control-plane boundary. Sandbox-owned execution must remain inside the sandbox `pb server`.
 
 | Path | Role |
 |------|------|
-| `cmd/pb/` | Cobra CLI entry point (`server start`, `sandbox create/list/inspect/stop/destroy`) |
-| `internal/rpc/` | JSON-RPC 2.0 HTTP server; routes `/rpc`, `/rpc/stream`, `/health`, `/primitives`, `/sandboxes/{id}/*`, and `/api/v1/*` inspector APIs |
-| `internal/primitive/` | Primitive interfaces + implementations: `fs.*`, `shell.exec`, `code.search`, `state.*` (Git-backed), `verify.test`; `registry.go` for dynamic registration |
-| `internal/sandbox/` | Runtime lifecycle and routing (`manager.go`, `docker.go`, `kubernetes.go`, `router.go`, `runtime.go`); TTL/reaper logic lives here |
-| `internal/control/` | SQLite control-plane store for sandboxes and events |
-| `internal/eventing/` | Shared event types, event bus, and context sink helpers |
-| `internal/config/` | YAML config management (`.primitivebox.yaml`) |
-| `internal/audit/` | Audit logging of all RPC operations (inputs, outputs, errors, duration, metadata) |
-| `internal/orchestrator/` | Task execution engine, replay, and failure recovery policy |
-| `sdk/python/primitivebox/`| Sync + async Python clients, typed wrappers, callbacks, and SSE streaming helpers |
-| `examples/auto_fix_bug/` | Reference agent: Python script demonstrating the API (list files, checkpoint, verify, etc.) |
-| `testdata/docker/` | Dockerfile for building the sandbox base image (`primitivebox-sandbox:latest`) |
+| `cmd/pb/` | CLI entry point and explicit dependency wiring |
+| `internal/rpc/` | JSON-RPC, SSE, inspector, and proxy transport surfaces |
+| `internal/control/` | SQLite-backed control-plane store for sandboxes and events |
+| `internal/eventing/` | Shared event model, bus, and context-bound sinks |
+| `internal/sandbox/` | Runtime drivers, router indirection, manager, and TTL/reaper logic |
+| `internal/primitive/` | Primitive contracts, schemas, registry, and built-in primitives |
+| `internal/orchestrator/` | Task execution, replay, and recovery policy |
+| `sdk/python/primitivebox/` | Sync/async clients and primitive wrappers |
 
-### RPC API Surface
+Conceptual flow:
 
-All primitives are called via JSON-RPC 2.0 `POST /rpc` (host mode) or `POST /sandboxes/{id}/rpc` (sandbox mode).
-Methods:
-- `fs.read`, `fs.write`, `fs.list`
-- `code.search`
-- `shell.exec` (supports command whitelisting)
-- `state.checkpoint`, `state.restore`, `state.list` (backed by Git under the hood)
-- `verify.test` (runs tests and structures output)
+`Client -> Gateway control plane -> Router/runtime driver -> Sandbox pb server -> Primitive execution`
 
-Other routes:
-- `POST /rpc/stream`, `POST /sandboxes/{id}/rpc/stream`
-- `GET /health`, `GET /sandboxes/{id}/health`
-- `GET /primitives`, `GET /sandboxes/{id}/primitives`
-- `GET /sandboxes`
-- `GET /api/v1/sandboxes`, `GET /api/v1/sandboxes/{id}`
-- `GET /api/v1/sandboxes/{id}/tree`, `GET /api/v1/sandboxes/{id}/checkpoints`
-- `GET /api/v1/events`, `GET /api/v1/events/stream`
+## Current Guardrails
 
-## Runtime Notes
+- `POST /rpc` is explicit host-workspace mode and may use host-local primitives.
+- `POST /sandboxes/{id}/rpc` and sandbox-owned workspace actions must execute inside the sandbox, not on the host gateway.
+- SQLite control-plane state and persisted events are the source of truth, not ad hoc JSON files or logs.
+- SSE is a real API surface, not a debug side channel.
+- Sync and async Python SDKs should remain aligned.
 
-- `controlplane.db` under `~/.primitivebox/` is now the source of truth for sandbox metadata and event history.
-- Legacy `~/.primitivebox/sandboxes/*.json` entries are imported once on startup for compatibility.
-- `DockerDriver` is the working runtime. `KubernetesDriver` is currently a tested skeleton with manifest/status abstractions and CLI routing.
-- `pb sandbox create` now accepts `--driver`, `--namespace`, `--ttl`, `--idle-ttl`, and `--network-mode`.
+## Change Discipline
 
-### Adding a New Primitive
+When adding or changing a primitive:
 
-1. Implement the `Primitive` interface (`Name()`, `Schema()`, `Execute()`) in `internal/primitive/`.
-2. Register it in `internal/primitive/registry.go` (in `RegisterDefaults`).
-3. Add a Python wrapper method in `sdk/python/primitivebox/primitives.py`.
-4. Update `README.md` and this `CLAUDE.md`.
+1. Update the Go primitive and schema.
+2. Register it in the primitive registry.
+3. Add sync SDK support.
+4. Add async SDK support.
+5. Add tests for success and failure paths.
+6. Update docs if the public behavior changed.
+
+When adding or changing runtime/lifecycle behavior:
+
+1. Keep `RuntimeDriver` and routing abstractions as the boundary.
+2. Persist control-plane state through the configured store.
+3. Emit the corresponding event after the write succeeds.
+4. Verify SSE/inspector surfaces still reflect the same truth.

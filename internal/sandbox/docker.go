@@ -154,12 +154,12 @@ func (d *DockerDriver) Start(ctx context.Context, sandboxID string) error {
 
 	if _, err := d.Exec(ctx, sandboxID, ExecCommand{
 		Command:    "sh",
-		Args:       []string{"-lc", fmt.Sprintf("nohup pb server start --host 0.0.0.0 --workspace %s --port %d --sandbox-mode >/tmp/primitivebox-server.log 2>&1 &", sb.Config.MountTarget, containerRPCListen)},
+		Args:       []string{"-lc", fmt.Sprintf("nohup pb-runtimed --host 0.0.0.0 --workspace %s --port %d --sandbox-id %s >/tmp/primitivebox-server.log 2>&1 &", sb.Config.MountTarget, containerRPCListen, sandboxID)},
 		Timeout:    10,
 		User:       sb.Config.User,
 		WorkingDir: sb.Config.MountTarget,
 	}); err != nil {
-		return fmt.Errorf("failed to start pb server inside sandbox: %w", err)
+		return fmt.Errorf("failed to start pb-runtimed inside sandbox: %w", err)
 	}
 
 	healthURL := fmt.Sprintf("%s/health", sb.RPCEndpoint)

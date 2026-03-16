@@ -2,6 +2,8 @@
 
 build:
 	go build -o bin/pb ./cmd/pb/
+	go build -o bin/pb-runtimed ./cmd/pb-runtimed/
+	go build -o bin/pb-repo-adapter ./cmd/pb-repo-adapter/
 
 run: build
 	./bin/pb server start --workspace .
@@ -17,6 +19,8 @@ ui-build:
 
 sandbox-image: build
 	GOOS=linux GOARCH=arm64 go build -o bin/pb-linux-arm64 ./cmd/pb
+	GOOS=linux GOARCH=arm64 go build -o bin/pb-runtimed-linux-arm64 ./cmd/pb-runtimed
+	GOOS=linux GOARCH=arm64 go build -o bin/pb-repo-adapter-linux-arm64 ./cmd/pb-repo-adapter
 	docker build -f testdata/docker/Dockerfile -t primitivebox-sandbox:latest .
 
 sandbox-browser-image: sandbox-image

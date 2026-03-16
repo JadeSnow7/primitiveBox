@@ -65,7 +65,7 @@ def export_openai_tools(client: "PrimitiveBoxClient", primitives: Optional[list]
     for prim in primitives:
         name = prim.get("name", "")
         description = prim.get("description", "")
-        input_schema = prim.get("input")
+        input_schema = prim.get("input_schema") or prim.get("input")
 
         # Parse JSON schema if it's a string
         if isinstance(input_schema, str):
@@ -119,7 +119,7 @@ def export_claude_tools(client: "PrimitiveBoxClient", primitives: Optional[list]
     for prim in primitives:
         name = prim.get("name", "")
         description = prim.get("description", "")
-        input_schema = prim.get("input")
+        input_schema = prim.get("input_schema") or prim.get("input")
 
         if isinstance(input_schema, str):
             try:

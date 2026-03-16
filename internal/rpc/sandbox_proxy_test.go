@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"primitivebox/internal/eventing"
 	"primitivebox/internal/primitive"
+	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
 )
 
@@ -63,6 +65,67 @@ func TestSandboxRPCProxy(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected proxy success, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSandboxRPCProxyPersistsTraceHeader(t *testing.T) {
+	t.Parallel()
+
+	manager := sandbox.NewManagerWithRegistryDir(&proxyDriver{
+		statuses: map[string]sandbox.SandboxStatus{
+			"sb-proxy-trace": sandbox.StatusRunning,
+		},
+	}, t.TempDir())
+	if err := manager.CreatePlaceholder(&sandbox.Sandbox{
+		ID:           "sb-proxy-trace",
+		ContainerID:  "ctr-proxy-trace",
+		Status:       sandbox.StatusRunning,
+		HealthStatus: "healthy",
+		RPCEndpoint:  "http://sandbox.local",
+		RPCPort:      18080,
+	}); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+
+	traceStore := &fakeTraceStore{}
+	server := NewServer(primitive.NewRegistry(), nil, manager)
+	server.AttachEventing(eventing.NewBus(nil), traceStore)
+	server.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		record := runtrace.StepRecord{
+			SandboxID:  "sb-proxy-trace",
+			Primitive:  "repo.patch_symbol",
+			TraceID:    "trace-123",
+			SessionID:  "session-123",
+			AttemptID:  "attempt-1",
+			StepID:     "step-123",
+			Timestamp:  "2026-03-16T00:00:00Z",
+			DurationMs: 12,
+		}
+		encoded, _ := runtrace.EncodeHeader(record)
+		respBody, _ := json.Marshal(Response{
+			JSONRPC: "2.0",
+			Result:  map[string]any{"data": map[string]any{"ok": true}},
+			ID:      "req-trace",
+		})
+		header := make(http.Header)
+		header.Set(runtrace.HeaderTraceStep, encoded)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+		}, nil
+	})
+
+	body := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"repo.patch_symbol","params":{"path":"main.go"},"id":"req-trace"}`)
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes/sb-proxy-trace/rpc", body)
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+	if len(traceStore.records) != 1 {
+		t.Fatalf("expected one trace record, got %d", len(traceStore.records))
+	}
+	if traceStore.records[0].Primitive != "repo.patch_symbol" {
+		t.Fatalf("unexpected trace record: %+v", traceStore.records[0])
 	}
 }
 
@@ -129,4 +192,21 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+type fakeTraceStore struct {
+	records []runtrace.StepRecord
+}
+
+func (f *fakeTraceStore) Append(ctx context.Context, evt eventing.Event) (eventing.Event, error) {
+	return evt, nil
+}
+
+func (f *fakeTraceStore) ListEvents(ctx context.Context, filter eventing.ListFilter) ([]eventing.Event, error) {
+	return nil, nil
+}
+
+func (f *fakeTraceStore) RecordTraceStep(ctx context.Context, record runtrace.StepRecord) error {
+	f.records = append(f.records, record)
+	return nil
 }

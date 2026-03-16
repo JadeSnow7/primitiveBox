@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primitivebox/internal/eventing"
+	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
 
 	_ "modernc.org/sqlite"
@@ -76,6 +77,23 @@ func (s *SQLiteStore) init() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_sandbox_id ON events (sandbox_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_type ON events (type, id DESC)`,
+		`CREATE TABLE IF NOT EXISTS trace_steps (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT,
+			trace_id TEXT,
+			session_id TEXT,
+			attempt_id TEXT,
+			sandbox_id TEXT,
+			step_id TEXT,
+			primitive TEXT NOT NULL,
+			checkpoint_id TEXT,
+			verify_result TEXT,
+			duration_ms INTEGER,
+			failure_kind TEXT,
+			timestamp TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_trace_steps_sandbox_id ON trace_steps (sandbox_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trace_steps_trace_id ON trace_steps (trace_id, id DESC)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -284,6 +302,61 @@ func (s *SQLiteStore) ListEvents(ctx context.Context, filter eventing.ListFilter
 		out = append(out, evt)
 	}
 	return out, rows.Err()
+}
+
+// RecordTraceStep persists a runtime trace summary record.
+func (s *SQLiteStore) RecordTraceStep(ctx context.Context, record runtrace.StepRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO trace_steps (
+			task_id, trace_id, session_id, attempt_id, sandbox_id, step_id,
+			primitive, checkpoint_id, verify_result, duration_ms, failure_kind, timestamp
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, record.TaskID, record.TraceID, record.SessionID, record.AttemptID, record.SandboxID, record.StepID,
+		record.Primitive, record.CheckpointID, record.VerifyResult, record.DurationMs, record.FailureKind, record.Timestamp)
+	return err
+}
+
+// ListTraceSteps returns trace summaries ordered newest-first.
+func (s *SQLiteStore) ListTraceSteps(ctx context.Context, sandboxID string, limit int) ([]runtrace.StepRecord, error) {
+	query := `SELECT task_id, trace_id, session_id, attempt_id, sandbox_id, step_id, primitive, checkpoint_id, verify_result, duration_ms, failure_kind, timestamp FROM trace_steps`
+	args := []any{}
+	if sandboxID != "" {
+		query += ` WHERE sandbox_id = ?`
+		args = append(args, sandboxID)
+	}
+	query += ` ORDER BY id DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []runtrace.StepRecord
+	for rows.Next() {
+		var record runtrace.StepRecord
+		if err := rows.Scan(
+			&record.TaskID,
+			&record.TraceID,
+			&record.SessionID,
+			&record.AttemptID,
+			&record.SandboxID,
+			&record.StepID,
+			&record.Primitive,
+			&record.CheckpointID,
+			&record.VerifyResult,
+			&record.DurationMs,
+			&record.FailureKind,
+			&record.Timestamp,
+		); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 // ImportLegacyRegistryDir migrates JSON registry files into SQLite once.

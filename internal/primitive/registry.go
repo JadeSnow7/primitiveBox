@@ -67,6 +67,18 @@ func (r *Registry) List() []string {
 	return names
 }
 
+// Registered returns all registered primitive implementations.
+func (r *Registry) Registered() []Primitive {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	items := make([]Primitive, 0, len(r.primitives))
+	for _, p := range r.primitives {
+		items = append(items, p)
+	}
+	return items
+}
+
 // Schemas returns all registered primitive schemas.
 func (r *Registry) Schemas() []Schema {
 	r.mu.RLock()
@@ -74,9 +86,21 @@ func (r *Registry) Schemas() []Schema {
 
 	schemas := make([]Schema, 0, len(r.primitives))
 	for _, p := range r.primitives {
-		schemas = append(schemas, p.Schema())
+		schemas = append(schemas, EnrichSchema(p.Schema()))
 	}
 	return schemas
+}
+
+// Schema returns the enriched schema for one registered primitive.
+func (r *Registry) Schema(name string) (Schema, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	p, ok := r.primitives[name]
+	if !ok {
+		return Schema{}, false
+	}
+	return EnrichSchema(p.Schema()), true
 }
 
 // RegisterDefaults registers all built-in primitives.
@@ -100,6 +124,8 @@ func (r *Registry) RegisterDefaults(workspaceDir string, options Options) {
 
 	// Verify primitives
 	r.MustRegister(NewVerifyTest(workspaceDir, options))
+	r.MustRegister(NewTestRun(workspaceDir, options))
+	r.MustRegister(NewVerifyCommand(workspaceDir, options))
 
 	// Macro / compound primitives
 	r.MustRegister(NewMacroSafeEdit(workspaceDir, options))

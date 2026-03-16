@@ -15,9 +15,76 @@ It is written as a normative guide, not a passive description. When the reposito
 > `AGENTS.md` is the canonical source. Any future `.cursorrules`, `.github/copilot-instructions.md`, `CLAUDE.md`, or assistant-specific rule files should be derived from this file rather than reinventing policy.
 > `AGENTS.md` 是母版；其他 AI 工具规则文件应从这里裁剪，不应自行发明另一套规范。
 
+## Repository Intent
+
+PrimitiveBox is not a generic chat assistant, not a prompt-only workflow engine, and not an unconstrained shell wrapper.
+
+PrimitiveBox is a checkpointed, verifiable, replayable execution runtime for AI agents, and it is evolving toward an AI-native system substrate where AI interacts with containerized systems and AI-native applications through structured primitives.
+
+PrimitiveBox 不是通用聊天助手，不是纯 Prompt 工作流引擎，也不是无约束的 shell 封装器。
+
+PrimitiveBox 的目标是成为一个面向 AI Agent 的、可检查点化、可验证、可回放的执行运行时，并进一步演进为 AI 原生系统底座：让 AI 通过结构化原语操作容器化系统与 AI 原生应用。
+
+### Core Product Direction
+
+PrimitiveBox should evolve along two connected lines:
+
+1. Agent execution runtime
+   - sandboxed execution
+   - structured primitives
+   - checkpoint / restore
+   - verification
+   - recovery
+   - replay
+2. AI-native system substrate
+   - system primitives over containerized environments
+   - application primitives exposed by AI-native apps
+   - a unified runtime for AI operating on both system objects and app objects
+   - safe, auditable, policy-controlled execution
+
+### Non-Goals
+
+Do not evolve this repository into:
+
+- a generic chatbot platform
+- a UI-first assistant product with weak runtime semantics
+- a prompt-only workflow engine
+- an unconstrained shell wrapper
+- a feature-sprawling control plane without a strong execution model
+
+### Design Priorities
+
+When making architecture or implementation decisions, optimize for:
+
+1. explicit primitive contracts
+2. checkpoint-first side effect handling
+3. verification before completion
+4. replayable task traces
+5. runtime isolation and safety
+6. pluggable runtime and primitive architecture
+7. clear separation between system primitives and future application primitives
+8. developer ergonomics only after execution semantics are clear
+
+### Architectural Bias
+
+Favor designs where:
+
+- the runtime owns state transitions
+- the model proposes actions, but does not define truth
+- verifiers and recovery logic are first-class
+- primitives are typed and schema-defined
+- container boundaries are explicit
+- future AI-native applications can register their own primitives cleanly
+
+### Evolution Rule
+
+If a proposed feature improves UX but weakens primitive clarity, checkpoint semantics, verification discipline, replayability, or safety boundaries, the feature should be rejected, deferred, or redesigned.
+
+The architecture sections below exist to enforce this product direction in concrete code paths.
+
 ## Mission
 
-PrimitiveBox is a host-side JSON-RPC gateway designed to safely run AI-agent primitives inside isolated sandboxes.
+PrimitiveBox is an execution runtime for AI agents that currently uses a host-side JSON-RPC gateway and isolated sandboxes to expose structured primitives safely.
 
 The system must preserve four repository-wide invariants across all changes:
 
@@ -26,7 +93,7 @@ The system must preserve four repository-wide invariants across all changes:
 3. Event-first observability for streaming, inspection, and replay.
 4. Stable public contracts across HTTP, JSON-RPC, SSE, and SDK layers.
 
-PrimitiveBox 是一个面向 AI Agent 工作流的宿主机 JSON-RPC 网关，用于在隔离沙箱内安全执行原语。后续任何代码都必须优先维护四点：执行边界清晰、控制面可查询、事件流可追踪、公共接口稳定。
+PrimitiveBox 当前通过宿主机 JSON-RPC 网关与隔离沙箱来承载 AI Agent 执行运行时。后续任何代码都必须优先维护四点：执行边界清晰、控制面可查询、事件流可追踪、公共接口稳定。
 
 ## How To Read This File
 
@@ -703,6 +770,108 @@ These gaps are not permission to lower the bar. They are the backlog for future 
 - Prefer small, explicit changes over magic abstractions.
 - When a rule in this file conflicts with a tempting shortcut, follow the rule.
 - If behavior seems ambiguous, preserve isolation and compatibility first.
+
+## Recommended AI Task Prompts
+
+These prompt templates are repository-approved shortcuts. Reuse or adapt them in issue templates, assistant-specific files, and task preambles instead of inventing a conflicting intent statement.
+
+### Iteration Planning Prompt
+
+Use this when asking an AI assistant to propose the next milestone:
+
+```text
+You are helping evolve the PrimitiveBox repository.
+
+PrimitiveBox is a checkpointed, verifiable, replayable execution runtime for AI agents, and is evolving toward an AI-native system substrate where AI interacts with containerized systems and AI-native applications through structured primitives.
+
+Preserve:
+- structured primitives
+- sandboxed execution
+- checkpoint / restore
+- verification / recovery / replay
+- future support for application primitives
+
+Do not optimize for surface features at the cost of execution semantics.
+Prefer a narrow, shippable increment over feature sprawl.
+
+Please output:
+- current architectural gaps
+- the most important next milestone
+- 3–5 concrete implementation steps
+- what not to build yet
+- risks and validation strategy
+```
+
+### Implementation Preflight Prompt
+
+Use this before writing code for a feature:
+
+```text
+You are about to implement a feature in PrimitiveBox.
+
+PrimitiveBox is an execution runtime for AI agents with structured primitives, sandboxed container execution, checkpoint / restore semantics, verification / recovery / replay, and a future path toward AI-native applications exposing application primitives.
+
+Before writing code:
+1. Explain how the change supports the core execution model.
+2. Classify it as runtime, primitive layer, sandbox management, orchestrator semantics, or future app-primitive extensibility.
+3. State whether it improves primitive clarity, safety, checkpointability, verifiability, or replayability.
+4. Prefer the minimal contract-first implementation that avoids locking in a bad abstraction.
+5. Identify what interfaces or contracts should be introduced before concrete implementation.
+
+Then provide:
+- recommended implementation approach
+- minimal file/module changes
+- what to stub vs fully implement
+- tests to add
+- future extension points to preserve
+```
+
+### README Positioning Prompt
+
+Use this when revising repository-facing narrative docs:
+
+```text
+Rewrite PrimitiveBox as:
+- a checkpointed sandbox runtime for AI agents
+- a primitive-based execution system, not just a tool-calling wrapper
+- a foundation for future AI-native applications running inside containerized environments
+
+Do not describe it as:
+- a generic AI assistant
+- a chat-first copilot
+- an unconstrained automation framework
+- a vague "AI OS"
+
+Make readers quickly understand:
+1. what PrimitiveBox is
+2. why it differs from common agent or copilot products
+3. what execution model it uses
+4. what works today
+5. what comes next
+```
+
+### AI-System Layering Prompt
+
+Use this when planning system primitives versus application primitives:
+
+```text
+PrimitiveBox is evolving beyond a coding sandbox into an AI-native system runtime.
+
+Reason in terms of:
+1. host/runtime layer
+2. sandbox/container layer
+3. system primitive layer
+4. application primitive layer
+5. orchestration / policy / verification layer
+
+For each layer, describe responsibilities, boundaries, APIs/contracts, MVP scope, and what should be deferred.
+
+Also explain:
+- how system primitives and application primitives coexist
+- how application adapters/plugins register capabilities
+- how checkpointing spans system and app operations
+- what safety and replay requirements must be preserved
+```
 
 ## AI Agent Editing Guidelines
 

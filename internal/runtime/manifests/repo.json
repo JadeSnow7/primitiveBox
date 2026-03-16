@@ -1,0 +1,69 @@
+{
+  "name": "repo",
+  "version": "0.1.0",
+  "transport": "http",
+  "command": "pb-repo-adapter",
+  "args": [
+    "--workspace",
+    "{{workspace}}",
+    "--transport",
+    "http",
+    "--listen",
+    "127.0.0.1:0"
+  ],
+  "primitives": [
+    {
+      "name": "repo.search",
+      "namespace": "repo",
+      "description": "Search repository content using code-aware text matching.",
+      "input_schema": {"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"max_results":{"type":"integer"}},"required":["query"]},
+      "output_schema": {"type":"object","properties":{"matches":{"type":"array"},"total":{"type":"integer"}}},
+      "side_effect": "read",
+      "checkpoint_required": false,
+      "timeout_ms": 15000,
+      "scope": "workspace",
+      "source": "app",
+      "adapter": "repo"
+    },
+    {
+      "name": "repo.read_symbol",
+      "namespace": "repo",
+      "description": "Read a symbol-sized code block from a source file.",
+      "input_schema": {"type":"object","properties":{"path":{"type":"string"},"symbol":{"type":"string"}},"required":["path","symbol"]},
+      "output_schema": {"type":"object","properties":{"path":{"type":"string"},"symbol":{"type":"string"},"kind":{"type":"string"},"start_line":{"type":"integer"},"end_line":{"type":"integer"},"content":{"type":"string"}}},
+      "side_effect": "read",
+      "checkpoint_required": false,
+      "timeout_ms": 15000,
+      "scope": "workspace",
+      "source": "app",
+      "adapter": "repo"
+    },
+    {
+      "name": "repo.patch_symbol",
+      "namespace": "repo",
+      "description": "Replace the body of a symbol-sized code block in a source file.",
+      "input_schema": {"type":"object","properties":{"path":{"type":"string"},"symbol":{"type":"string"},"body":{"type":"string"}},"required":["path","symbol","body"]},
+      "output_schema": {"type":"object","properties":{"path":{"type":"string"},"symbol":{"type":"string"},"bytes_written":{"type":"integer"},"diff":{"type":"string"}}},
+      "side_effect": "write",
+      "checkpoint_required": true,
+      "timeout_ms": 30000,
+      "scope": "workspace",
+      "verifier_hint": "repo.run_tests",
+      "source": "app",
+      "adapter": "repo"
+    },
+    {
+      "name": "repo.run_tests",
+      "namespace": "repo",
+      "description": "Run repository tests using the configured or default test command.",
+      "input_schema": {"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer"}}},
+      "output_schema": {"type":"object","properties":{"passed":{"type":"boolean"},"total":{"type":"integer"},"failures":{"type":"integer"},"errors":{"type":"integer"},"output":{"type":"string"},"summary":{"type":"string"}}},
+      "side_effect": "exec",
+      "checkpoint_required": false,
+      "timeout_ms": 120000,
+      "scope": "workspace",
+      "source": "app",
+      "adapter": "repo"
+    }
+  ]
+}
