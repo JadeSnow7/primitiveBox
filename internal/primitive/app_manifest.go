@@ -46,7 +46,7 @@ func (r *inMemoryAppRegistry) Register(ctx context.Context, manifest AppPrimitiv
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if existing, exists := r.manifests[manifest.Name]; exists {
+	if existing, exists := r.manifests[manifest.Name]; exists && existing.AppID != manifest.AppID {
 		return fmt.Errorf(
 			"app_primitive_conflict: %q is already registered by app %q",
 			manifest.Name,

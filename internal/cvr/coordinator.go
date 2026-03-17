@@ -19,6 +19,7 @@ type CVRResult struct {
 
 type CVRRequest struct {
 	PrimitiveID string
+	SandboxID   string // populated by caller; written into CheckpointManifest.SandboxID
 	Intent      PrimitiveIntent
 	Params      any
 	Exec        StrategyExecutor
@@ -78,7 +79,7 @@ func (c *CVRCoordinator) Execute(ctx context.Context, req CVRRequest) (CVRResult
 		manifest = CheckpointManifest{
 			ID:               checkpointID,
 			CheckpointID:     checkpointID,
-			SandboxID:        "",
+			SandboxID:        req.SandboxID,
 			PrimitiveID:      req.PrimitiveID,
 			Intent:           req.Intent,
 			Trigger:          TriggerIntentPolicy,
@@ -204,27 +205,16 @@ func extractCheckpointID(result ExecuteResult) (string, error) {
 		return "", errors.New("checkpoint result missing data")
 	}
 
-	if raw, ok := result.Data["checkpoint_id"]; ok {
-		var checkpointID string
-		if err := json.Unmarshal(raw, &checkpointID); err != nil {
-			return "", fmt.Errorf("decode checkpoint id: %w", err)
-		}
-		if checkpointID != "" {
-			return checkpointID, nil
-		}
+	raw, ok := result.Data["checkpoint_id"]
+	if !ok {
+		return "", errors.New("checkpoint result missing checkpoint_id")
 	}
-
-	if raw, ok := result.Data["result"]; ok {
-		var payload struct {
-			CheckpointID string `json:"checkpoint_id"`
-		}
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			return "", fmt.Errorf("decode checkpoint payload: %w", err)
-		}
-		if payload.CheckpointID != "" {
-			return payload.CheckpointID, nil
-		}
+	var checkpointID string
+	if err := json.Unmarshal(raw, &checkpointID); err != nil {
+		return "", fmt.Errorf("decode checkpoint_id: %w", err)
 	}
-
-	return "", errors.New("checkpoint result missing checkpoint_id")
+	if checkpointID == "" {
+		return "", errors.New("checkpoint result has empty checkpoint_id")
+	}
+	return checkpointID, nil
 }

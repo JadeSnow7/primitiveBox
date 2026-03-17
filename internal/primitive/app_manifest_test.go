@@ -36,6 +36,36 @@ func TestAppRegistry_DuplicateRejected(t *testing.T) {
 	}
 }
 
+func TestAppRegistry_SameAppIDReregistrationAllowed(t *testing.T) {
+	t.Parallel()
+
+	registry := NewInMemoryAppRegistry()
+	first := AppPrimitiveManifest{
+		AppID:      "app-one",
+		Name:       "myapp.greet",
+		SocketPath: "/tmp/app-one.sock",
+	}
+	updated := AppPrimitiveManifest{
+		AppID:      "app-one",
+		Name:       "myapp.greet",
+		SocketPath: "/tmp/app-one-v2.sock",
+	}
+
+	if err := registry.Register(context.Background(), first); err != nil {
+		t.Fatalf("initial register: %v", err)
+	}
+	if err := registry.Register(context.Background(), updated); err != nil {
+		t.Fatalf("same-app re-register: %v", err)
+	}
+	got, err := registry.Get(context.Background(), "myapp.greet")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got == nil || got.SocketPath != updated.SocketPath {
+		t.Fatalf("expected updated SocketPath %q, got %v", updated.SocketPath, got)
+	}
+}
+
 func TestAppRegistry_UnregisterThenReregister(t *testing.T) {
 	t.Parallel()
 

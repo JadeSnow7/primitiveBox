@@ -134,6 +134,7 @@ func runServer(host string, port int, workspaceDir string, sandboxMode, serveUI 
 
 	server := rpc.NewServer(registry, auditor, manager)
 	server.AttachEventing(bus, store)
+	server.SetAllowedOrigins([]string{"http://localhost:5173"})
 	if serveUI {
 		uiFS, err := pbui.DistFS()
 		if err != nil {

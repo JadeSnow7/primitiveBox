@@ -8,8 +8,10 @@ package orchestrator
 type RecoveryAction string
 
 const (
-	ActionRetry RecoveryAction = "RETRY"
-	ActionPause RecoveryAction = "PAUSE" // Needs human intervention
+	ActionRetry    RecoveryAction = "RETRY"
+	ActionPause    RecoveryAction = "PAUSE"    // Needs human intervention
+	ActionFail     RecoveryAction = "FAIL"     // Terminal failure, no retry
+	ActionContinue RecoveryAction = "CONTINUE" // Skip this step, proceed to next
 )
 
 func (a RecoveryAction) String() string { return string(a) }

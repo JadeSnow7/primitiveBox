@@ -59,13 +59,14 @@ const (
 
 // Server is the JSON-RPC 2.0 HTTP server that dispatches calls to primitives.
 type Server struct {
-	registry    *primitive.Registry
-	router      *sandbox.Router
-	appRegistry primitive.AppPrimitiveRegistry
-	auditor     *audit.Logger
-	manager     *sandbox.Manager
-	eventBus    *eventing.Bus
-	eventStore  eventing.Store
+	registry       *primitive.Registry
+	router         *sandbox.Router
+	appRegistry    primitive.AppPrimitiveRegistry
+	auditor        *audit.Logger
+	manager        *sandbox.Manager
+	eventBus       *eventing.Bus
+	eventStore     eventing.Store
+	allowedOrigins []string // CORS origins; nil means no CORS headers are set
 
 	listener   net.Listener
 	server     *http.Server
@@ -113,6 +114,13 @@ func (s *Server) AttachUI(uiFS fs.FS) {
 	s.uiFS = uiFS
 }
 
+// SetAllowedOrigins configures the CORS allowed origins list.
+// Requests with an Origin header matching one of the provided values will
+// receive Access-Control-Allow-* response headers. Pass nil to disable CORS.
+func (s *Server) SetAllowedOrigins(origins []string) {
+	s.allowedOrigins = origins
+}
+
 // ListenAndServe starts the HTTP server on the given address.
 func (s *Server) ListenAndServe(addr string) error {
 	s.server = &http.Server{
@@ -145,16 +153,19 @@ func (s *Server) Handler() http.Handler {
 	if s.uiFS != nil {
 		mux.HandleFunc("/", s.handleUI)
 	}
-	return corsMiddleware(mux)
+	return corsMiddleware(s.allowedOrigins, mux)
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "http://localhost:5173" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-PB-Origin")
+		for _, allowed := range allowedOrigins {
+			if origin == allowed {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-PB-Origin")
+				break
+			}
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -361,7 +372,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 	}
 	s.writeResponse(w, Response{
 		JSONRPC: "2.0",
-		Result:  s.responseResult(req.Method, result),
+		Result:  s.responseResult(ctx, req.Method, result),
 		ID:      req.ID,
 	})
 }
@@ -380,7 +391,7 @@ func (s *Server) routePrimitive(ctx context.Context, method string, params json.
 	return prim.Execute(ctx, params)
 }
 
-func (s *Server) responseResult(method string, result primitive.Result) any {
+func (s *Server) responseResult(ctx context.Context, method string, result primitive.Result) any {
 	if s.registry != nil {
 		if _, ok := s.registry.Get(method); ok {
 			return result
@@ -389,7 +400,7 @@ func (s *Server) responseResult(method string, result primitive.Result) any {
 	if s.appRegistry == nil {
 		return result
 	}
-	manifest, err := s.appRegistry.Get(context.Background(), method)
+	manifest, err := s.appRegistry.Get(ctx, method)
 	if err == nil && manifest != nil {
 		return result.Data
 	}
