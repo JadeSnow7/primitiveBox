@@ -48,6 +48,47 @@ func TestCVRCoordinator_IrreversibleMutation(t *testing.T) {
 	}
 }
 
+func TestCVRCoordinator_ManifestHasSandboxID(t *testing.T) {
+	t.Parallel()
+
+	const wantSandboxID = "sb-test-123"
+	store := &mockManifestStore{}
+	exec := &mockStrategyExecutor{
+		result:       ExecuteResult{Success: false, ErrMsg: "write failed"},
+		checkpointID: "cp-sandbox-test",
+	}
+	coordinator := NewCVRCoordinator(store, nil, NewDefaultDecisionTree())
+
+	result, err := coordinator.Execute(context.Background(), CVRRequest{
+		PrimitiveID: "fs.write",
+		SandboxID:   wantSandboxID,
+		Intent: PrimitiveIntent{
+			Category:   IntentMutation,
+			Reversible: false,
+			RiskLevel:  RiskHigh,
+		},
+		Exec:    exec,
+		Attempt: 0,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.CheckpointID == "" {
+		t.Fatal("expected checkpoint to be created")
+	}
+
+	manifest, err := store.GetManifest(context.Background(), result.CheckpointID)
+	if err != nil {
+		t.Fatalf("get manifest: %v", err)
+	}
+	if manifest == nil {
+		t.Fatalf("manifest not found for checkpoint %q", result.CheckpointID)
+	}
+	if manifest.SandboxID != wantSandboxID {
+		t.Fatalf("expected SandboxID=%q, got %q", wantSandboxID, manifest.SandboxID)
+	}
+}
+
 func TestCVRCoordinator_LayerAShortCircuit(t *testing.T) {
 	t.Parallel()
 
@@ -170,14 +211,14 @@ func (m *mockStrategyExecutor) Execute(ctx context.Context, method string, param
 		if checkpointID == "" {
 			checkpointID = "test-checkpoint-id"
 		}
-		payload, err := json.Marshal(map[string]any{"checkpoint_id": checkpointID})
+		idJSON, err := json.Marshal(checkpointID)
 		if err != nil {
 			return ExecuteResult{}, err
 		}
 		return ExecuteResult{
 			Success: true,
 			Data: map[string]json.RawMessage{
-				"result": payload,
+				"checkpoint_id": idJSON,
 			},
 		}, nil
 	}

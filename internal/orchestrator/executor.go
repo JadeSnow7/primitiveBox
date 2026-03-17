@@ -65,6 +65,7 @@ type Step struct {
 	StartedAt    time.Time       `json:"started_at"`
 	CompletedAt  time.Time       `json:"completed_at,omitempty"`
 	Error        string          `json:"error,omitempty"`
+	Escalated    bool            `json:"escalated,omitempty"`
 }
 
 // StepResult wraps the outcome of a single primitive call.

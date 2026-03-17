@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primitivebox/internal/cvr"
+	"primitivebox/internal/primitive"
 	pbruntime "primitivebox/internal/runtime"
 	"primitivebox/internal/runtrace"
 
@@ -30,6 +31,14 @@ type Engine struct {
 	manifestStore cvr.CheckpointManifestStore
 	cvrStrategy   cvr.VerifyStrategy
 	cvrTree       *cvr.DecisionTree
+	appRegistry   primitive.AppPrimitiveRegistry
+}
+
+// SetAppRegistry wires an AppPrimitiveRegistry so the engine can look up
+// manifest Intent for app-registered primitives instead of defaulting to
+// IntentMutation/RiskHigh for all unrecognised method names.
+func (e *Engine) SetAppRegistry(reg primitive.AppPrimitiveRegistry) {
+	e.appRegistry = reg
 }
 
 // NewEngine creates a new orchestrator engine.
@@ -96,7 +105,7 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 
 		step.Status = StepRunning
 		step.StartedAt = time.Now()
-		intent := inferPrimitiveIntent(step.Primitive)
+		intent := e.inferPrimitiveIntent(ctx, step.Primitive)
 		intentJSON, _ := json.Marshal(intent)
 		traceRecord := runtrace.StepRecord{
 			TaskID:         task.ID,
@@ -113,6 +122,7 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 		coordinator := cvr.NewCVRCoordinator(e.checkpointManifestStore(), e.cvrStrategy, e.cvrDecisionTree())
 		cvrResult, err := coordinator.Execute(ctx, cvr.CVRRequest{
 			PrimitiveID: step.Primitive,
+			SandboxID:   task.SandboxID,
 			Intent:      intent,
 			Params:      step.Input,
 			Exec:        execAdapter,
@@ -178,10 +188,37 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 			} else {
 				action = ActionRetry
 			}
+		case cvr.RecoveryActionRollback:
+			// Attempt a real state restore using the checkpoint created before this step.
+			if cvrResult.CheckpointID == "" {
+				lastErr = fmt.Errorf("rollback requested but no checkpoint_id available for %s", step.Primitive)
+				action = ActionFail
+			} else {
+				restoreParams, _ := json.Marshal(map[string]string{"checkpoint_id": cvrResult.CheckpointID})
+				_, restoreErr := e.executor.Execute(ctx, "state.restore", restoreParams)
+				if restoreErr != nil {
+					lastErr = fmt.Errorf("rollback failed for checkpoint %s: %w", cvrResult.CheckpointID, restoreErr)
+					action = ActionFail
+				} else {
+					log.Printf("[Engine] Rolled back to checkpoint %s for step %s", cvrResult.CheckpointID, step.Primitive)
+					step.Status = StepRolledBack
+					action = ActionPause
+				}
+			}
+		case cvr.RecoveryActionEscalate, cvr.RecoveryActionRewrite:
+			// Surface to caller for human or AI re-planning; stop retrying.
+			step.Escalated = true
+			action = ActionPause
+		case cvr.RecoveryActionAbort:
+			// Permanent failure — do not retry, do not pause for human.
+			action = ActionFail
+		case cvr.RecoveryActionSkip:
+			// Skip this step and continue the task.
+			action = ActionContinue
 		case "":
 			action = e.recovery.Decide(failureKind, attempt, maxRetries)
 		default:
-			action = ActionPause
+			action = e.recovery.Decide(failureKind, attempt, maxRetries)
 		}
 		log.Printf("[Engine] Failure kind=%s, action=%s", failureKind, action)
 
@@ -189,8 +226,17 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 		case ActionRetry:
 			continue
 		case ActionPause:
+			// Preserve StepRolledBack if rollback already set it.
+			if step.Status != StepRolledBack {
+				step.Status = StepFailed
+			}
+			return nil, fmt.Errorf("step %s paused: %v", step.Primitive, lastErr)
+		case ActionFail:
 			step.Status = StepFailed
-			return nil, fmt.Errorf("max retries exceeded for %s: %v", step.Primitive, lastErr)
+			return nil, fmt.Errorf("terminal failure for %s: %v", step.Primitive, lastErr)
+		case ActionContinue:
+			step.Status = StepSkipped
+			return &StepResult{Success: true}, nil
 		}
 	}
 
@@ -260,8 +306,9 @@ func (a *cvrExecutorAdapter) Execute(ctx context.Context, method string, params 
 		Success: result.Success,
 	}
 	if len(result.Data) > 0 {
-		execResult.Data = map[string]json.RawMessage{
-			"result": result.Data,
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(result.Data, &m); err == nil {
+			execResult.Data = m
 		}
 	}
 	if result.Error != nil {
@@ -305,38 +352,61 @@ func (noopManifestStore) MarkCorrupted(ctx context.Context, checkpointID string,
 	return nil
 }
 
-func inferPrimitiveIntent(primitiveID string) cvr.PrimitiveIntent {
-	intent := cvr.PrimitiveIntent{
-		Category:   cvr.IntentMutation,
-		Reversible: false,
-		RiskLevel:  cvr.RiskHigh,
-	}
+// inferPrimitiveIntent resolves the CVR intent for a primitive method name.
+// For system primitives it uses static prefix matching.
+// For unrecognised names it consults the AppPrimitiveRegistry; if a manifest
+// is found its Intent is used directly.  If no manifest is found either, the
+// conservative default (mutation/irreversible/high) is used and a warning is
+// logged so the caller knows they may be paying unnecessary checkpoint costs.
+func (e *Engine) inferPrimitiveIntent(ctx context.Context, primitiveID string) cvr.PrimitiveIntent {
 	switch {
 	case strings.HasPrefix(primitiveID, "fs.read"),
 		strings.HasPrefix(primitiveID, "fs.list"),
 		strings.HasPrefix(primitiveID, "fs.diff"),
 		strings.HasPrefix(primitiveID, "code.search"),
 		strings.HasPrefix(primitiveID, "code.symbols"):
-		intent.Category = cvr.IntentQuery
-		intent.Reversible = true
-		intent.RiskLevel = cvr.RiskLow
+		return cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		}
 	case strings.HasPrefix(primitiveID, "verify."),
 		strings.HasPrefix(primitiveID, "test."),
 		strings.HasPrefix(primitiveID, "repo.run_tests"):
-		intent.Category = cvr.IntentVerification
-		intent.Reversible = true
-		intent.RiskLevel = cvr.RiskMedium
+		return cvr.PrimitiveIntent{
+			Category:   cvr.IntentVerification,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		}
 	case primitiveID == "state.restore":
-		intent.Category = cvr.IntentRollback
-		intent.Reversible = true
-		intent.RiskLevel = cvr.RiskHigh
+		return cvr.PrimitiveIntent{
+			Category:   cvr.IntentRollback,
+			Reversible: true,
+			RiskLevel:  cvr.RiskHigh,
+		}
 	case strings.HasPrefix(primitiveID, "fs.write"),
 		strings.HasPrefix(primitiveID, "macro.safe_edit"),
 		strings.HasPrefix(primitiveID, "repo.patch"),
 		strings.HasPrefix(primitiveID, "shell.exec"):
-		intent.Category = cvr.IntentMutation
-		intent.Reversible = false
-		intent.RiskLevel = cvr.RiskHigh
+		return cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: false,
+			RiskLevel:  cvr.RiskHigh,
+		}
 	}
-	return intent
+
+	// Unknown system primitive — check the app registry before defaulting.
+	if e.appRegistry != nil {
+		manifest, err := e.appRegistry.Get(ctx, primitiveID)
+		if err == nil && manifest != nil {
+			return manifest.Intent
+		}
+	}
+
+	log.Printf("[Engine] unknown primitive %q: using conservative default intent (mutation/irreversible/high)", primitiveID)
+	return cvr.PrimitiveIntent{
+		Category:   cvr.IntentMutation,
+		Reversible: false,
+		RiskLevel:  cvr.RiskHigh,
+	}
 }

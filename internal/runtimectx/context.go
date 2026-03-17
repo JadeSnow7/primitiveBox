@@ -6,9 +6,9 @@ import (
 	"primitivebox/internal/cvr"
 )
 
-type legacyIntentContextKey struct{}
+type intentContextKey struct{}
 
-var IntentContextKey = legacyIntentContextKey{}
+var IntentContextKey = intentContextKey{}
 
 func WithIntent(ctx context.Context, intent *cvr.PrimitiveIntent) context.Context {
 	if intent == nil {
