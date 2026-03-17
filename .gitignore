@@ -1,0 +1,11 @@
+bin/
+dist/
+.primitivebox/
+*.db
+sdk/python/dist/
+sdk/python/*.egg-info/
+sdk/python/__pycache__/
+sdk/python/tests/__pycache__/
+__pycache__/
+*.pyc
+.env

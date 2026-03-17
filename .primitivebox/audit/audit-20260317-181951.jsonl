@@ -1,0 +1,2 @@
+{"timestamp":"2026-03-17T10:20:19.18989Z","method":"fs.read","input":{"path":"README.md"},"error":"file not found: README.md","duration":"59.416µs"}
+{"timestamp":"2026-03-17T10:24:49.122103Z","method":"fs.read","input":{"path":"README.md"},"error":"file not found: README.md","duration":"59.792µs"}

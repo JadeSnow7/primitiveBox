@@ -717,6 +717,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIEvents(w, r)
 	case path == "events/stream":
 		s.handleAPIEventStream(w, r)
+	case path == "trace":
+		s.handleAPITraceList(w, r, "")
+	case strings.HasPrefix(path, "trace/"):
+		stepID := strings.TrimPrefix(path, "trace/")
+		if stepID == "stream" {
+			s.handleAPITraceStream(w, r, "")
+		} else {
+			s.handleAPITraceDetail(w, r, "", stepID)
+		}
 	case strings.HasPrefix(path, "sandboxes/"):
 		s.handleAPISandboxDetail(w, r, strings.TrimPrefix(path, "sandboxes/"))
 	default:
