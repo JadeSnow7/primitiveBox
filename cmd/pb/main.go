@@ -25,8 +25,9 @@ import (
 )
 
 var (
-	version = "0.1.0-dev"
-	cfgFile string
+	version      = "0.1.0-dev"
+	cfgFile      string
+	endpointFlag string
 )
 
 func main() {
@@ -38,10 +39,21 @@ agents can operate on local projects or Docker sandboxes through JSON-RPC.`,
 	}
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: .primitivebox.yaml)")
+	rootCmd.PersistentFlags().StringVar(&endpointFlag, "endpoint", "", "PrimitiveBox server URL (default: http://localhost:8080, env: PB_ENDPOINT)")
 	rootCmd.AddCommand(
 		newVersionCmd(),
 		newServerCmd(),
 		newSandboxCmd(),
+		newRPCCmd(),
+		newPrimitiveCmd(),
+		newFSCmd(),
+		newShellCmd(),
+		newCheckpointCmd(),
+		newEventsCmd(),
+		newTraceCmd(),
+		newInitCmd(),
+		newDoctorCmd(),
+		newCompletionCmd(rootCmd),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
