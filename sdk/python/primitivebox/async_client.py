@@ -75,7 +75,7 @@ class AsyncPrimitiveBoxClient:
             await self._http.aclose()
             self._http = None
 
-    async def call(self, method: str, params: Optional[dict] = None) -> Any:
+    async def call(self, method: str, params: Optional[dict] = None, headers: Optional[dict[str, str]] = None) -> Any:
         """Make an async JSON-RPC 2.0 call."""
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=self.timeout, trust_env=False)
@@ -91,7 +91,7 @@ class AsyncPrimitiveBoxClient:
         response = await self._http.post(
             f"{self.endpoint}{self._rpc_path()}",
             content=json.dumps(request).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **(headers or {})},
         )
         response.raise_for_status()
         data = response.json()

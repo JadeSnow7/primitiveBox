@@ -101,6 +101,14 @@ func TestSQLiteStorePersistsSandboxesAndEvents(t *testing.T) {
 	if len(traces) != 1 || traces[0].Primitive != "repo.patch_symbol" {
 		t.Fatalf("unexpected trace steps: %+v", traces)
 	}
+
+	trace, err := store.GetTraceStep(context.Background(), sb.ID, "step-1")
+	if err != nil {
+		t.Fatalf("get trace step: %v", err)
+	}
+	if trace == nil || trace.TraceID != "trace-1" {
+		t.Fatalf("unexpected trace step: %+v", trace)
+	}
 }
 
 func TestSQLiteStoreImportsLegacyRegistry(t *testing.T) {

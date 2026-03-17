@@ -210,3 +210,30 @@ func (f *fakeTraceStore) RecordTraceStep(ctx context.Context, record runtrace.St
 	f.records = append(f.records, record)
 	return nil
 }
+
+func (f *fakeTraceStore) ListTraceSteps(ctx context.Context, sandboxID string, limit int) ([]runtrace.StepRecord, error) {
+	var out []runtrace.StepRecord
+	for _, record := range f.records {
+		if sandboxID != "" && record.SandboxID != sandboxID {
+			continue
+		}
+		out = append(out, record)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeTraceStore) GetTraceStep(ctx context.Context, sandboxID, stepID string) (*runtrace.StepRecord, error) {
+	for _, record := range f.records {
+		if sandboxID != "" && record.SandboxID != sandboxID {
+			continue
+		}
+		if record.StepID == stepID {
+			copyRecord := record
+			return &copyRecord, nil
+		}
+	}
+	return nil, nil
+}

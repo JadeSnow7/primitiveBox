@@ -15,8 +15,8 @@ import (
 // with a single HTTP call, reducing latency and LLM function invocations.
 
 type MacroSafeEdit struct {
-	resolver  workspacePathResolver
-	options   Options
+	resolver workspacePathResolver
+	options  Options
 }
 
 func NewMacroSafeEdit(workspaceDir string, options Options) *MacroSafeEdit {
@@ -119,8 +119,14 @@ func (m *MacroSafeEdit) Execute(ctx context.Context, params json.RawMessage) (Re
 			"error":         err.Error(),
 		}}, nil
 	}
-	writeResData, _ := writeResult.Data.(FSWriteResult)
-	diff := writeResData.Diff
+	diff := writeResult.Diff
+	if diff == "" {
+		if payload, ok := writeResult.Data.(map[string]any); ok {
+			if rawDiff, ok := payload["diff"].(string); ok {
+				diff = rawDiff
+			}
+		}
+	}
 
 	// ── Step 3: Verify ────────────────────────────────────────────────────
 	verifier := NewVerifyTest(workspaceDir, m.options)

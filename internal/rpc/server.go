@@ -59,11 +59,13 @@ const (
 
 // Server is the JSON-RPC 2.0 HTTP server that dispatches calls to primitives.
 type Server struct {
-	registry   *primitive.Registry
-	auditor    *audit.Logger
-	manager    *sandbox.Manager
-	eventBus   *eventing.Bus
-	eventStore eventing.Store
+	registry    *primitive.Registry
+	router      *sandbox.Router
+	appRegistry primitive.AppPrimitiveRegistry
+	auditor     *audit.Logger
+	manager     *sandbox.Manager
+	eventBus    *eventing.Bus
+	eventStore  eventing.Store
 
 	listener   net.Listener
 	server     *http.Server
@@ -74,13 +76,29 @@ type Server struct {
 
 // NewServer creates a new JSON-RPC server bound to the given primitive registry.
 func NewServer(registry *primitive.Registry, auditor *audit.Logger, manager *sandbox.Manager) *Server {
+	router := sandbox.NewRouter(registry)
+	appRegistry := primitive.NewInMemoryAppRegistry()
+	router.RegisterAppRegistry(appRegistry)
+
 	return &Server{
-		registry: registry,
-		auditor:  auditor,
-		manager:  manager,
+		registry:    registry,
+		router:      router,
+		appRegistry: appRegistry,
+		auditor:     auditor,
+		manager:     manager,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+func (s *Server) RegisterAppRegistry(reg primitive.AppPrimitiveRegistry) {
+	if reg == nil {
+		reg = primitive.NewInMemoryAppRegistry()
+	}
+	s.appRegistry = reg
+	if s.router != nil {
+		s.router.RegisterAppRegistry(reg)
 	}
 }
 
@@ -120,13 +138,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/rpc/stream", s.handleRPCStream)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/primitives", s.handleListPrimitives)
+	mux.HandleFunc("/app-primitives", s.handleListAppPrimitives)
 	mux.HandleFunc("/sandboxes", s.handleSandboxes)
 	mux.HandleFunc("/sandboxes/", s.handleSandboxRoute)
 	mux.HandleFunc("/api/v1/", s.handleAPI)
 	if s.uiFS != nil {
 		mux.HandleFunc("/", s.handleUI)
 	}
-	return mux
+	return corsMiddleware(mux)
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "http://localhost:5173" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-PB-Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Addr returns the actual listen address.
@@ -207,17 +242,8 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 		return
 	}
 
-	prim, ok := s.registry.Get(req.Method)
-	if !ok {
-		if stream {
-			http.Error(w, "unknown primitive: "+req.Method, http.StatusNotFound)
-			return
-		}
-		s.writeResponse(w, Response{
-			JSONRPC: "2.0",
-			Error:   &Error{Code: CodeMethodNotFound, Message: "unknown primitive: " + req.Method},
-			ID:      req.ID,
-		})
+	if req.Method == "app.register" {
+		s.handleAppRegister(w, r, req, stream)
 		return
 	}
 
@@ -258,8 +284,21 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 		})
 	}
 	start := time.Now()
-	result, err := prim.Execute(ctx, req.Params)
+	result, err := s.routePrimitive(ctx, req.Method, req.Params)
 	duration := time.Since(start)
+
+	if err != nil && errors.Is(err, sandbox.ErrPrimitiveNotFound) {
+		if stream {
+			http.Error(w, "unknown primitive: "+req.Method, http.StatusNotFound)
+			return
+		}
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: CodeMethodNotFound, Message: "unknown primitive: " + req.Method},
+			ID:      req.ID,
+		})
+		return
+	}
 
 	if s.auditor != nil {
 		s.auditor.LogCall(req.Method, req.Params, result.Data, err, duration)
@@ -286,9 +325,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			if encoded, encodeErr := runtrace.EncodeHeader(traceRecord); encodeErr == nil {
 				w.Header().Set(runtrace.HeaderTraceStep, encoded)
 			}
-			if store, ok := s.eventStore.(runtrace.Store); ok {
-				_ = store.RecordTraceStep(ctx, traceRecord)
-			}
+			s.publishTraceStep(ctx, traceRecord)
 		}
 		if stream {
 			s.writeStreamEvent(w, "error", map[string]any{
@@ -306,9 +343,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			if encoded, encodeErr := runtrace.EncodeHeader(traceRecord); encodeErr == nil {
 				w.Header().Set(runtrace.HeaderTraceStep, encoded)
 			}
-			if store, ok := s.eventStore.(runtrace.Store); ok {
-				_ = store.RecordTraceStep(ctx, traceRecord)
-			}
+			s.publishTraceStep(ctx, traceRecord)
 		}
 		s.writeStreamEvent(w, "completed", map[string]any{
 			"method":      req.Method,
@@ -322,15 +357,43 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 		if encoded, encodeErr := runtrace.EncodeHeader(traceRecord); encodeErr == nil {
 			w.Header().Set(runtrace.HeaderTraceStep, encoded)
 		}
-		if store, ok := s.eventStore.(runtrace.Store); ok {
-			_ = store.RecordTraceStep(ctx, traceRecord)
-		}
+		s.publishTraceStep(ctx, traceRecord)
 	}
 	s.writeResponse(w, Response{
 		JSONRPC: "2.0",
-		Result:  result,
+		Result:  s.responseResult(req.Method, result),
 		ID:      req.ID,
 	})
+}
+
+func (s *Server) routePrimitive(ctx context.Context, method string, params json.RawMessage) (primitive.Result, error) {
+	if s.router != nil {
+		return s.router.Route(ctx, method, params)
+	}
+	if s.registry == nil {
+		return primitive.Result{}, sandbox.ErrPrimitiveNotFound
+	}
+	prim, ok := s.registry.Get(method)
+	if !ok {
+		return primitive.Result{}, sandbox.ErrPrimitiveNotFound
+	}
+	return prim.Execute(ctx, params)
+}
+
+func (s *Server) responseResult(method string, result primitive.Result) any {
+	if s.registry != nil {
+		if _, ok := s.registry.Get(method); ok {
+			return result
+		}
+	}
+	if s.appRegistry == nil {
+		return result
+	}
+	manifest, err := s.appRegistry.Get(context.Background(), method)
+	if err == nil && manifest != nil {
+		return result.Data
+	}
+	return result
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -348,6 +411,23 @@ func (s *Server) handleListPrimitives(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleListAppPrimitives(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.appRegistry == nil {
+		http.Error(w, "app registry unavailable", http.StatusNotImplemented)
+		return
+	}
+	items, err := s.appRegistry.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, appPrimitiveListResponse{AppPrimitives: items})
+}
+
 func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 	if s.manager == nil {
 		http.Error(w, "sandbox manager unavailable", http.StatusNotImplemented)
@@ -357,18 +437,37 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 
-	sandboxes, err := s.manager.List(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		sandboxes, err := s.manager.List(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": sandboxes})
+	case http.MethodPost:
+		var cfg sandbox.SandboxConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		sb, err := s.manager.Create(r.Context(), cfg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.manager.Start(r.Context(), sb.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sb, _ = s.manager.Inspect(r.Context(), sb.ID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sb)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": sandboxes})
 }
 
 func (s *Server) handleSandboxRoute(w http.ResponseWriter, r *http.Request) {
@@ -386,17 +485,24 @@ func (s *Server) handleSandboxRoute(w http.ResponseWriter, r *http.Request) {
 
 	sandboxID := parts[0]
 	if len(parts) == 1 {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			sb, err := s.manager.Inspect(r.Context(), sandboxID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(sb)
+		case http.MethodDelete:
+			if err := s.manager.Destroy(r.Context(), sandboxID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		sb, err := s.manager.Inspect(r.Context(), sandboxID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sb)
 		return
 	}
 
@@ -464,6 +570,9 @@ func (s *Server) proxySandboxRequest(w http.ResponseWriter, r *http.Request, san
 		return
 	}
 	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	if v := r.Header.Get("X-PB-Origin"); v != "" {
+		req.Header.Set("X-PB-Origin", v)
+	}
 
 	start := time.Now()
 	resp, err := s.httpClient.Do(req)
@@ -503,9 +612,7 @@ func (s *Server) proxySandboxRequest(w http.ResponseWriter, r *http.Request, san
 			if record.SandboxID == "" {
 				record.SandboxID = sandboxID
 			}
-			if store, ok := s.eventStore.(runtrace.Store); ok {
-				_ = store.RecordTraceStep(r.Context(), record)
-			}
+			s.publishTraceStep(r.Context(), record)
 		}
 	}
 
@@ -611,16 +718,35 @@ func (s *Server) handleAPISandboxes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sandbox manager unavailable", http.StatusNotImplemented)
 		return
 	}
-	if r.Method != http.MethodGet {
+
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.manager.List(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"sandboxes": items})
+	case http.MethodPost:
+		var cfg sandbox.SandboxConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		sb, err := s.manager.Create(r.Context(), cfg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.manager.Start(r.Context(), sb.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sb, _ = s.manager.Inspect(r.Context(), sb.ID)
+		writeJSON(w, sb)
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	items, err := s.manager.List(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]any{"sandboxes": items})
 }
 
 func (s *Server) handleAPISandboxDetail(w http.ResponseWriter, r *http.Request, path string) {
@@ -635,12 +761,23 @@ func (s *Server) handleAPISandboxDetail(w http.ResponseWriter, r *http.Request, 
 	}
 	sandboxID := parts[0]
 	if len(parts) == 1 {
-		sb, err := s.manager.Inspect(r.Context(), sandboxID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
+		switch r.Method {
+		case http.MethodGet:
+			sb, err := s.manager.Inspect(r.Context(), sandboxID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			writeJSON(w, sb)
+		case http.MethodDelete:
+			if err := s.manager.Destroy(r.Context(), sandboxID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-		writeJSON(w, sb)
 		return
 	}
 
@@ -662,6 +799,22 @@ func (s *Server) handleAPISandboxDetail(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		writeJSON(w, result)
+	case "trace":
+		if len(parts) == 2 {
+			s.handleAPITraceList(w, r, sandboxID)
+			return
+		}
+		if len(parts) == 3 && parts[2] == "stream" {
+			s.handleAPITraceStream(w, r, sandboxID)
+			return
+		}
+		if len(parts) == 3 {
+			s.handleAPITraceDetail(w, r, sandboxID, parts[2])
+			return
+		}
+		http.NotFound(w, r)
+	case "app-primitives":
+		s.proxySandboxRequest(w, r, sandboxID, "/app-primitives", "sandbox.app_primitives")
 	default:
 		http.NotFound(w, r)
 	}
@@ -708,6 +861,82 @@ func (s *Server) handleAPIEventStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleAPITraceList(w http.ResponseWriter, r *http.Request, sandboxID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store, ok := s.eventStore.(traceStoreReader)
+	if !ok {
+		http.Error(w, "trace store unavailable", http.StatusNotImplemented)
+		return
+	}
+	records, err := store.ListTraceSteps(r.Context(), sandboxID, queryInt(r.URL.Query().Get("limit"), 100))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	events := make([]traceEvent, 0, len(records))
+	for _, record := range records {
+		events = append(events, projectTraceEvent(record))
+	}
+	writeJSON(w, traceListResponse{Events: events})
+}
+
+func (s *Server) handleAPITraceDetail(w http.ResponseWriter, r *http.Request, sandboxID, stepID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store, ok := s.eventStore.(traceStoreReader)
+	if !ok {
+		http.Error(w, "trace store unavailable", http.StatusNotImplemented)
+		return
+	}
+	record, err := store.GetTraceStep(r.Context(), sandboxID, stepID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if record == nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, projectTraceEvent(*record))
+}
+
+func (s *Server) handleAPITraceStream(w http.ResponseWriter, r *http.Request, sandboxID string) {
+	if s.eventBus == nil {
+		http.Error(w, "event bus unavailable", http.StatusNotImplemented)
+		return
+	}
+	if !supportsStreaming(w) {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	setSSEHeaders(w)
+	ch, cancel := s.eventBus.Subscribe(64)
+	defer cancel()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case evt := <-ch:
+			if evt.Type != "trace.step" {
+				continue
+			}
+			if sandboxID != "" && evt.SandboxID != sandboxID {
+				continue
+			}
+			var payload traceEvent
+			if err := json.Unmarshal(evt.Data, &payload); err != nil {
+				continue
+			}
+			s.writeStreamEvent(w, evt.Type, payload)
+		}
+	}
+}
+
 func (s *Server) callSandboxPrimitive(ctx context.Context, sandboxID, method string, params map[string]any) (any, error) {
 	sb, err := s.manager.Inspect(ctx, sandboxID)
 	if err != nil {
@@ -742,6 +971,132 @@ func (s *Server) callSandboxPrimitive(ctx context.Context, sandboxID, method str
 		return nil, fmt.Errorf("%s", rpcResp.Error.Message)
 	}
 	return rpcResp.Result, nil
+}
+
+func (s *Server) handleAppRegister(w http.ResponseWriter, r *http.Request, req Request, stream bool) {
+	if stream {
+		http.Error(w, "streaming unsupported for app.register", http.StatusBadRequest)
+		return
+	}
+	if !isSandboxRequest(r) || s.manager != nil {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeMethodNotFound,
+				Message: "method not available on host gateway",
+			},
+			ID: req.ID,
+		})
+		return
+	}
+	if s.appRegistry == nil {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeInternalError,
+				Message: "app registry unavailable",
+			},
+			ID: req.ID,
+		})
+		return
+	}
+
+	var manifest primitive.AppPrimitiveManifest
+	if err := json.Unmarshal(req.Params, &manifest); err != nil {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeInvalidRequest,
+				Message: "invalid app manifest: " + err.Error(),
+			},
+			ID: req.ID,
+		})
+		return
+	}
+	if manifest.AppID == "" || manifest.Name == "" || manifest.SocketPath == "" {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeInvalidRequest,
+				Message: "app_id, name, and socket_path are required",
+			},
+			ID: req.ID,
+		})
+		return
+	}
+
+	inputSchema, err := normalizeManifestSchema(manifest.InputSchema)
+	if err != nil {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeInvalidRequest,
+				Message: "invalid input_schema: " + err.Error(),
+			},
+			ID: req.ID,
+		})
+		return
+	}
+	outputSchema, err := normalizeManifestSchema(manifest.OutputSchema)
+	if err != nil {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeInvalidRequest,
+				Message: "invalid output_schema: " + err.Error(),
+			},
+			ID: req.ID,
+		})
+		return
+	}
+	manifest.InputSchema = inputSchema
+	manifest.OutputSchema = outputSchema
+
+	if err := s.appRegistry.Register(r.Context(), manifest); err != nil {
+		s.writeResponse(w, Response{
+			JSONRPC: "2.0",
+			Error: &Error{
+				Code:    CodeInternalError,
+				Message: err.Error(),
+			},
+			ID: req.ID,
+		})
+		return
+	}
+
+	s.writeResponse(w, Response{
+		JSONRPC: "2.0",
+		Result: map[string]any{
+			"registered": true,
+			"name":       manifest.Name,
+		},
+		ID: req.ID,
+	})
+}
+
+func isSandboxRequest(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("X-PB-Origin"), "sandbox")
+}
+
+func normalizeManifestSchema(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return json.RawMessage("{}"), nil
+	}
+	if trimmed[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(trimmed, &encoded); err != nil {
+			return nil, err
+		}
+		trimmed = []byte(encoded)
+	}
+	if len(trimmed) == 0 {
+		return json.RawMessage("{}"), nil
+	}
+	if !json.Valid(trimmed) {
+		return nil, fmt.Errorf("must be valid JSON")
+	}
+	return append(json.RawMessage(nil), trimmed...), nil
 }
 
 func (s *Server) writePrimitiveError(w http.ResponseWriter, id any, err error) {

@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"primitivebox/internal/cvr"
 	"primitivebox/internal/eventing"
 	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
@@ -87,6 +90,13 @@ func (s *SQLiteStore) init() error {
 			step_id TEXT,
 			primitive TEXT NOT NULL,
 			checkpoint_id TEXT,
+			intent_snapshot TEXT,
+			layer_a_outcome TEXT,
+			strategy_name TEXT,
+			strategy_outcome TEXT,
+			recovery_path TEXT,
+			affected_scopes_json TEXT,
+			cvr_depth_exceeded INTEGER NOT NULL DEFAULT 0,
 			verify_result TEXT,
 			duration_ms INTEGER,
 			failure_kind TEXT,
@@ -94,10 +104,46 @@ func (s *SQLiteStore) init() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_trace_steps_sandbox_id ON trace_steps (sandbox_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_trace_steps_trace_id ON trace_steps (trace_id, id DESC)`,
+		`CREATE TABLE IF NOT EXISTS checkpoint_manifests (
+			checkpoint_id TEXT PRIMARY KEY,
+			sandbox_id TEXT NOT NULL,
+			primitive_id TEXT NOT NULL,
+			intent_category TEXT NOT NULL,
+			intent_reversible INTEGER NOT NULL DEFAULT 0,
+			intent_risk_level TEXT NOT NULL,
+			trigger TEXT NOT NULL,
+			trigger_reason TEXT NOT NULL,
+			task_id TEXT,
+			trace_id TEXT,
+			step_id TEXT,
+			attempt INTEGER NOT NULL DEFAULT 0,
+			workspace_root TEXT NOT NULL,
+			prev_checkpoint_id TEXT,
+			corrupted INTEGER NOT NULL DEFAULT 0,
+			corrupt_reason TEXT,
+			manifest_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cp_sandbox ON checkpoint_manifests(sandbox_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cp_trace ON checkpoint_manifests(trace_id)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("init sqlite schema: %w", err)
+		}
+	}
+	traceStepMigrations := []string{
+		`ALTER TABLE trace_steps ADD COLUMN intent_snapshot TEXT`,
+		`ALTER TABLE trace_steps ADD COLUMN layer_a_outcome TEXT`,
+		`ALTER TABLE trace_steps ADD COLUMN strategy_name TEXT`,
+		`ALTER TABLE trace_steps ADD COLUMN strategy_outcome TEXT`,
+		`ALTER TABLE trace_steps ADD COLUMN recovery_path TEXT`,
+		`ALTER TABLE trace_steps ADD COLUMN affected_scopes_json TEXT`,
+		`ALTER TABLE trace_steps ADD COLUMN cvr_depth_exceeded INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, stmt := range traceStepMigrations {
+		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("migrate trace_steps schema: %w", err)
 		}
 	}
 	return nil
@@ -306,19 +352,27 @@ func (s *SQLiteStore) ListEvents(ctx context.Context, filter eventing.ListFilter
 
 // RecordTraceStep persists a runtime trace summary record.
 func (s *SQLiteStore) RecordTraceStep(ctx context.Context, record runtrace.StepRecord) error {
-	_, err := s.db.ExecContext(ctx, `
+	affectedScopesJSON, err := json.Marshal(record.AffectedScopes)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO trace_steps (
 			task_id, trace_id, session_id, attempt_id, sandbox_id, step_id,
-			primitive, checkpoint_id, verify_result, duration_ms, failure_kind, timestamp
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			primitive, checkpoint_id, intent_snapshot, layer_a_outcome, strategy_name,
+			strategy_outcome, recovery_path, affected_scopes_json, cvr_depth_exceeded,
+			verify_result, duration_ms, failure_kind, timestamp
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, record.TaskID, record.TraceID, record.SessionID, record.AttemptID, record.SandboxID, record.StepID,
-		record.Primitive, record.CheckpointID, record.VerifyResult, record.DurationMs, record.FailureKind, record.Timestamp)
+		record.Primitive, record.CheckpointID, record.IntentSnapshot, record.LayerAOutcome, record.StrategyName,
+		record.StrategyOutcome, record.RecoveryPath, string(affectedScopesJSON), boolToInt(record.CVRDepthExceeded),
+		record.VerifyResult, record.DurationMs, record.FailureKind, record.Timestamp)
 	return err
 }
 
 // ListTraceSteps returns trace summaries ordered newest-first.
 func (s *SQLiteStore) ListTraceSteps(ctx context.Context, sandboxID string, limit int) ([]runtrace.StepRecord, error) {
-	query := `SELECT task_id, trace_id, session_id, attempt_id, sandbox_id, step_id, primitive, checkpoint_id, verify_result, duration_ms, failure_kind, timestamp FROM trace_steps`
+	query := `SELECT task_id, trace_id, session_id, attempt_id, sandbox_id, step_id, primitive, checkpoint_id, intent_snapshot, layer_a_outcome, strategy_name, strategy_outcome, recovery_path, affected_scopes_json, cvr_depth_exceeded, verify_result, duration_ms, failure_kind, timestamp FROM trace_steps`
 	args := []any{}
 	if sandboxID != "" {
 		query += ` WHERE sandbox_id = ?`
@@ -338,6 +392,8 @@ func (s *SQLiteStore) ListTraceSteps(ctx context.Context, sandboxID string, limi
 	var records []runtrace.StepRecord
 	for rows.Next() {
 		var record runtrace.StepRecord
+		var affectedScopesJSON string
+		var cvrDepthExceeded int
 		if err := rows.Scan(
 			&record.TaskID,
 			&record.TraceID,
@@ -347,6 +403,13 @@ func (s *SQLiteStore) ListTraceSteps(ctx context.Context, sandboxID string, limi
 			&record.StepID,
 			&record.Primitive,
 			&record.CheckpointID,
+			&record.IntentSnapshot,
+			&record.LayerAOutcome,
+			&record.StrategyName,
+			&record.StrategyOutcome,
+			&record.RecoveryPath,
+			&affectedScopesJSON,
+			&cvrDepthExceeded,
 			&record.VerifyResult,
 			&record.DurationMs,
 			&record.FailureKind,
@@ -354,9 +417,138 @@ func (s *SQLiteStore) ListTraceSteps(ctx context.Context, sandboxID string, limi
 		); err != nil {
 			return nil, err
 		}
+		record.CVRDepthExceeded = cvrDepthExceeded != 0
+		if affectedScopesJSON != "" {
+			_ = json.Unmarshal([]byte(affectedScopesJSON), &record.AffectedScopes)
+		}
 		records = append(records, record)
 	}
 	return records, rows.Err()
+}
+
+// GetTraceStep returns a single trace summary record by sandbox and step ID.
+func (s *SQLiteStore) GetTraceStep(ctx context.Context, sandboxID, stepID string) (*runtrace.StepRecord, error) {
+	query := `SELECT task_id, trace_id, session_id, attempt_id, sandbox_id, step_id, primitive, checkpoint_id, intent_snapshot, layer_a_outcome, strategy_name, strategy_outcome, recovery_path, affected_scopes_json, cvr_depth_exceeded, verify_result, duration_ms, failure_kind, timestamp FROM trace_steps WHERE step_id = ?`
+	args := []any{stepID}
+	if sandboxID != "" {
+		query += ` AND sandbox_id = ?`
+		args = append(args, sandboxID)
+	}
+	query += ` ORDER BY id DESC LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, query, args...)
+	var record runtrace.StepRecord
+	var affectedScopesJSON string
+	var cvrDepthExceeded int
+	if err := row.Scan(
+		&record.TaskID,
+		&record.TraceID,
+		&record.SessionID,
+		&record.AttemptID,
+		&record.SandboxID,
+		&record.StepID,
+		&record.Primitive,
+		&record.CheckpointID,
+		&record.IntentSnapshot,
+		&record.LayerAOutcome,
+		&record.StrategyName,
+		&record.StrategyOutcome,
+		&record.RecoveryPath,
+		&affectedScopesJSON,
+		&cvrDepthExceeded,
+		&record.VerifyResult,
+		&record.DurationMs,
+		&record.FailureKind,
+		&record.Timestamp,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	record.CVRDepthExceeded = cvrDepthExceeded != 0
+	if affectedScopesJSON != "" {
+		_ = json.Unmarshal([]byte(affectedScopesJSON), &record.AffectedScopes)
+	}
+	return &record, nil
+}
+
+func (s *SQLiteStore) SaveManifest(ctx context.Context, m cvr.CheckpointManifest) error {
+	manifestJSON, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	checkpointID := m.CheckpointID
+	if checkpointID == "" {
+		checkpointID = m.ID
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO checkpoint_manifests (
+			checkpoint_id, sandbox_id, primitive_id, intent_category, intent_reversible,
+			intent_risk_level, trigger, trigger_reason, task_id, trace_id, step_id,
+			attempt, workspace_root, prev_checkpoint_id, corrupted, corrupt_reason,
+			manifest_json, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, checkpointID, m.SandboxID, m.PrimitiveID, m.Intent.Category, boolToInt(m.Intent.Reversible),
+		m.Intent.RiskLevel, m.Trigger, m.TriggerReason, m.TaskID, m.TraceID, m.StepID, m.Attempt,
+		m.WorkspaceRoot, m.PrevCheckpointID, boolToInt(m.Corrupted), m.CorruptReason,
+		string(manifestJSON), m.CreatedAt.UnixMilli())
+	return err
+}
+
+func (s *SQLiteStore) GetManifest(ctx context.Context, checkpointID string) (*cvr.CheckpointManifest, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT manifest_json FROM checkpoint_manifests WHERE checkpoint_id = ?`, checkpointID)
+	var manifestJSON string
+	if err := row.Scan(&manifestJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var manifest cvr.CheckpointManifest
+	if err := json.Unmarshal([]byte(manifestJSON), &manifest); err != nil {
+		return nil, err
+	}
+	return &manifest, nil
+}
+
+func (s *SQLiteStore) GetManifestChain(ctx context.Context, checkpointID string, maxDepth int) ([]cvr.CheckpointManifest, error) {
+	var manifests []cvr.CheckpointManifest
+	currentID := checkpointID
+	for depth := 0; currentID != "" && (maxDepth == 0 || depth < maxDepth); depth++ {
+		manifest, err := s.GetManifest(ctx, currentID)
+		if err != nil {
+			return nil, err
+		}
+		if manifest == nil {
+			break
+		}
+		manifests = append(manifests, *manifest)
+		currentID = manifest.PrevCheckpointID
+	}
+	return manifests, nil
+}
+
+func (s *SQLiteStore) MarkCorrupted(ctx context.Context, checkpointID string, reason string) error {
+	manifest, err := s.GetManifest(ctx, checkpointID)
+	if err != nil {
+		return err
+	}
+	if manifest == nil {
+		return nil
+	}
+	manifest.Corrupted = true
+	manifest.CorruptReason = reason
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE checkpoint_manifests
+		SET corrupted = ?, corrupt_reason = ?, manifest_json = ?
+		WHERE checkpoint_id = ?
+	`, 1, reason, string(manifestJSON), checkpointID)
+	return err
 }
 
 // ImportLegacyRegistryDir migrates JSON registry files into SQLite once.
@@ -437,4 +629,15 @@ func joinClauses(clauses []string) string {
 		out += " AND " + clauses[i]
 	}
 	return out
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }

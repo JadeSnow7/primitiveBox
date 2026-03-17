@@ -16,6 +16,7 @@ Usage::
 
 from .client import PrimitiveBoxClient
 from .async_client import AsyncPrimitiveBoxClient
+from .app import AppServer
 from .primitives import BrowserPrimitives, CodePrimitives, DBPrimitives, FSPrimitives, MacroPrimitives, ShellPrimitives, StatePrimitives, VerifyPrimitives
 from .events import EventEmitter
 from . import adapters
@@ -24,6 +25,7 @@ __version__ = "0.3.0"
 __all__ = [
     "PrimitiveBoxClient",
     "AsyncPrimitiveBoxClient",
+    "AppServer",
     "FSPrimitives",
     "ShellPrimitives",
     "StatePrimitives",

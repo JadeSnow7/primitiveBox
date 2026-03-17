@@ -43,7 +43,7 @@ class PrimitiveBoxClient:
         self.db = DBPrimitives(self)
         self.browser = BrowserPrimitives(self)
 
-    def call(self, method: str, params: Optional[dict] = None) -> Any:
+    def call(self, method: str, params: Optional[dict] = None, headers: Optional[dict[str, str]] = None) -> Any:
         self._call_id += 1
 
         request = {
@@ -53,7 +53,13 @@ class PrimitiveBoxClient:
             "id": self._call_id,
         }
 
-        result = self._request_json(self._rpc_path(), method="POST", payload=request, timeout=120)
+        result = self._request_json(
+            self._rpc_path(),
+            method="POST",
+            payload=request,
+            timeout=120,
+            headers=headers,
+        )
         if "error" in result and result["error"] is not None:
             error = result["error"]
             self._events.emit("fail", {"method": method, "error": error})
@@ -138,17 +144,25 @@ class PrimitiveBoxClient:
             return f"/sandboxes/{self.sandbox_id}/primitives"
         return "/primitives"
 
-    def _request_json(self, path: str, *, method: str = "GET", payload: Optional[dict] = None, timeout: int = 30) -> dict:
+    def _request_json(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: Optional[dict] = None,
+        timeout: int = 30,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict:
         data = None
-        headers = {}
+        req_headers = dict(headers or {})
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            req_headers["Content-Type"] = "application/json"
 
         req = urllib.request.Request(
             f"{self.endpoint}{path}",
             data=data,
-            headers=headers,
+            headers=req_headers,
             method=method,
         )
 

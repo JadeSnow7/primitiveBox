@@ -10,18 +10,25 @@ import (
 const HeaderTraceStep = "X-PrimitiveBox-Trace-Step"
 
 type StepRecord struct {
-	TaskID       string `json:"task_id,omitempty"`
-	TraceID      string `json:"trace_id,omitempty"`
-	SessionID    string `json:"session_id,omitempty"`
-	AttemptID    string `json:"attempt_id,omitempty"`
-	SandboxID    string `json:"sandbox_id,omitempty"`
-	StepID       string `json:"step_id,omitempty"`
-	Primitive    string `json:"primitive"`
-	CheckpointID string `json:"checkpoint_id,omitempty"`
-	VerifyResult string `json:"verify_result,omitempty"`
-	DurationMs   int64  `json:"duration_ms,omitempty"`
-	FailureKind  string `json:"failure_kind,omitempty"`
-	Timestamp    string `json:"timestamp,omitempty"`
+	TaskID           string   `json:"task_id,omitempty"`
+	TraceID          string   `json:"trace_id,omitempty"`
+	SessionID        string   `json:"session_id,omitempty"`
+	AttemptID        string   `json:"attempt_id,omitempty"`
+	SandboxID        string   `json:"sandbox_id,omitempty"`
+	StepID           string   `json:"step_id,omitempty"`
+	Primitive        string   `json:"primitive"`
+	CheckpointID     string   `json:"checkpoint_id,omitempty"`
+	IntentSnapshot   string   `json:"intent_snapshot,omitempty"`
+	LayerAOutcome    string   `json:"layer_a_outcome,omitempty"`
+	StrategyName     string   `json:"strategy_name,omitempty"`
+	StrategyOutcome  string   `json:"strategy_outcome,omitempty"`
+	RecoveryPath     string   `json:"recovery_path,omitempty"`
+	AffectedScopes   []string `json:"affected_scopes,omitempty"`
+	CVRDepthExceeded bool     `json:"cvr_depth_exceeded,omitempty"`
+	VerifyResult     string   `json:"verify_result,omitempty"`
+	DurationMs       int64    `json:"duration_ms,omitempty"`
+	FailureKind      string   `json:"failure_kind,omitempty"`
+	Timestamp        string   `json:"timestamp,omitempty"`
 }
 
 type Recorder struct {

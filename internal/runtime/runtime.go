@@ -10,11 +10,17 @@ import (
 	"sync"
 	"time"
 
+	"primitivebox/internal/cvr"
 	"primitivebox/internal/primitive"
+	"primitivebox/internal/runtimectx"
 	"primitivebox/internal/runtrace"
 
 	"github.com/google/uuid"
 )
+
+// IntentContextKey is the public context key used to pass *cvr.PrimitiveIntent
+// through runtime execution paths.
+var IntentContextKey = runtimectx.IntentContextKey
 
 type Config struct {
 	WorkspaceDir string
@@ -132,6 +138,9 @@ func (r *Runtime) execute(ctx context.Context, method string, params json.RawMes
 		callCtx, cancel = context.WithTimeout(ctx, time.Duration(schema.TimeoutMs)*time.Millisecond)
 		defer cancel()
 	}
+	if intent, ok := ctx.Value(IntentContextKey).(*cvr.PrimitiveIntent); ok && intent != nil {
+		callCtx = runtimectx.WithIntent(callCtx, intent)
+	}
 
 	checkpointID := ""
 	if !internal && schema.CheckpointRequired && method != "state.checkpoint" && method != "state.restore" {
@@ -176,6 +185,9 @@ func (r *Runtime) execute(ctx context.Context, method string, params json.RawMes
 	}
 
 	record.VerifyResult = verifyResult
+	if intent, ok := ctx.Value(IntentContextKey).(*cvr.PrimitiveIntent); ok && intent != nil {
+		record.AffectedScopes = append([]string(nil), intent.AffectedScopes...)
+	}
 	record.DurationMs = time.Since(start).Milliseconds()
 	record.FailureKind = failureKind
 	r.persistTrace(ctx, record)

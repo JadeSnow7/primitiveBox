@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"primitivebox/internal/eventing"
 	"primitivebox/internal/primitive"
+	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
 )
 
@@ -114,6 +116,173 @@ func TestAPISandboxTreeUsesSandboxRPC(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body.String(), "README.md") {
 		t.Fatalf("expected README entry, got %s", resp.Body.String())
+	}
+}
+
+func TestAPITraceListAndDetail(t *testing.T) {
+	t.Parallel()
+
+	manager := sandbox.NewManagerWithOptions(proxyDriver{}, sandbox.ManagerOptions{Store: sandbox.NewMemoryStore()})
+	if err := manager.CreatePlaceholder(&sandbox.Sandbox{
+		ID:           "sb-trace",
+		Driver:       "proxy",
+		Status:       sandbox.StatusRunning,
+		HealthStatus: "healthy",
+		RPCEndpoint:  "http://sandbox.local",
+		RPCPort:      18080,
+		Config:       sandbox.SandboxConfig{Driver: "proxy"},
+	}); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+
+	traceStore := &fakeTraceStore{
+		records: []runtrace.StepRecord{
+			{
+				SandboxID:       "sb-trace",
+				StepID:          "step-1",
+				TraceID:         "trace-1",
+				Primitive:       "repo.patch_symbol",
+				IntentSnapshot:  `{"category":"mutation","reversible":true,"risk_level":"medium","affected_scopes":["main.go"]}`,
+				LayerAOutcome:   "checkpoint_created",
+				StrategyName:    "verify.test",
+				StrategyOutcome: "passed",
+				RecoveryPath:    "",
+				AffectedScopes:  []string{"main.go"},
+				DurationMs:      24,
+				Timestamp:       "2026-03-16T00:00:00Z",
+			},
+		},
+	}
+	server := NewServer(primitive.NewRegistry(), nil, manager)
+	server.AttachEventing(eventing.NewBus(traceStore), traceStore)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sb-trace/trace", nil)
+	listResp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", listResp.Code, listResp.Body.String())
+	}
+	if !strings.Contains(listResp.Body.String(), `"primitive_id":"repo.patch_symbol"`) {
+		t.Fatalf("expected projected trace event, got %s", listResp.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sb-trace/trace/step-1", nil)
+	detailResp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(detailResp, detailReq)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", detailResp.Code, detailResp.Body.String())
+	}
+	if !strings.Contains(detailResp.Body.String(), `"category":"mutation"`) {
+		t.Fatalf("expected structured intent snapshot, got %s", detailResp.Body.String())
+	}
+}
+
+func TestAPITraceStreamEmitsProjectedTraceEvents(t *testing.T) {
+	t.Parallel()
+
+	manager := sandbox.NewManagerWithOptions(proxyDriver{}, sandbox.ManagerOptions{Store: sandbox.NewMemoryStore()})
+	if err := manager.CreatePlaceholder(&sandbox.Sandbox{
+		ID:           "sb-trace",
+		Driver:       "proxy",
+		Status:       sandbox.StatusRunning,
+		HealthStatus: "healthy",
+		RPCEndpoint:  "http://sandbox.local",
+		RPCPort:      18080,
+		Config:       sandbox.SandboxConfig{Driver: "proxy"},
+	}); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+
+	traceStore := &fakeTraceStore{}
+	server := NewServer(primitive.NewRegistry(), nil, manager)
+	server.AttachEventing(eventing.NewBus(traceStore), traceStore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sb-trace/trace/stream", nil).WithContext(ctx)
+	resp := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.Handler().ServeHTTP(resp, req)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	server.publishTraceStep(context.Background(), runtrace.StepRecord{
+		SandboxID:       "sb-trace",
+		StepID:          "step-stream",
+		TraceID:         "trace-stream",
+		Primitive:       "fs.write",
+		StrategyOutcome: "passed",
+		Timestamp:       "2026-03-16T00:00:00Z",
+	})
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	payload := resp.Body.String()
+	if !strings.Contains(payload, "event: trace.step") {
+		t.Fatalf("expected trace.step event, got %s", payload)
+	}
+	if !strings.Contains(payload, `"step-stream"`) {
+		t.Fatalf("expected projected step id, got %s", payload)
+	}
+}
+
+func TestAPIAppPrimitivesProxyListsSandboxManifests(t *testing.T) {
+	t.Parallel()
+
+	manager := sandbox.NewManagerWithOptions(&proxyDriver{
+		statuses: map[string]sandbox.SandboxStatus{
+			"sb-app": sandbox.StatusRunning,
+		},
+	}, sandbox.ManagerOptions{Store: sandbox.NewMemoryStore()})
+	if err := manager.CreatePlaceholder(&sandbox.Sandbox{
+		ID:           "sb-app",
+		Driver:       "proxy",
+		Status:       sandbox.StatusRunning,
+		HealthStatus: "healthy",
+		RPCEndpoint:  "http://sandbox.local",
+		RPCPort:      18080,
+		Config:       sandbox.SandboxConfig{Driver: "proxy"},
+	}); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+
+	server := NewServer(primitive.NewRegistry(), nil, manager)
+	server.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/app-primitives" {
+			t.Fatalf("unexpected proxied path: %s", req.URL.Path)
+		}
+		respBody, _ := json.Marshal(appPrimitiveListResponse{
+			AppPrimitives: []primitive.AppPrimitiveManifest{
+				{
+					AppID:       "notes",
+					Name:        "notes.create",
+					Description: "Create a note",
+					InputSchema: json.RawMessage(`{"type":"object"}`),
+					OutputSchema: json.RawMessage(`{"type":"object"}`),
+					SocketPath:  "/tmp/notes.sock",
+				},
+			},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sb-app/app-primitives", nil)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"notes.create"`) {
+		t.Fatalf("expected app primitive manifest, got %s", resp.Body.String())
 	}
 }
 

@@ -1,12 +1,153 @@
 package sandbox
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"primitivebox/internal/primitive"
 )
 
 // DriverResolver maps a sandbox ID back to the runtime name that owns it.
 type DriverResolver func(sandboxID string) (string, bool)
+
+var ErrPrimitiveNotFound = errors.New("primitive not found")
+
+const defaultAppPrimitiveTimeout = 30 * time.Second
+
+// Router dispatches primitive execution to either built-in primitives or
+// app-registered Unix socket handlers.
+type Router struct {
+	registry *primitive.Registry
+
+	mu          sync.RWMutex
+	appRegistry primitive.AppPrimitiveRegistry
+	requestID   atomic.Uint64
+}
+
+func NewRouter(registry *primitive.Registry) *Router {
+	return &Router{registry: registry}
+}
+
+func (r *Router) RegisterAppRegistry(reg primitive.AppPrimitiveRegistry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.appRegistry = reg
+}
+
+func (r *Router) Route(ctx context.Context, method string, params json.RawMessage) (primitive.Result, error) {
+	if r.registry != nil {
+		if p, ok := r.registry.Get(method); ok {
+			return p.Execute(ctx, params)
+		}
+	}
+
+	appRegistry := r.currentAppRegistry()
+	if appRegistry == nil {
+		return primitive.Result{}, ErrPrimitiveNotFound
+	}
+
+	manifest, err := appRegistry.Get(ctx, method)
+	if err != nil {
+		return primitive.Result{}, err
+	}
+	if manifest == nil {
+		return primitive.Result{}, ErrPrimitiveNotFound
+	}
+
+	return r.routeAppPrimitive(ctx, *manifest, method, params)
+}
+
+func (r *Router) currentAppRegistry() primitive.AppPrimitiveRegistry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.appRegistry
+}
+
+func (r *Router) routeAppPrimitive(ctx context.Context, manifest primitive.AppPrimitiveManifest, method string, params json.RawMessage) (primitive.Result, error) {
+	start := time.Now()
+	if len(params) == 0 {
+		params = json.RawMessage("{}")
+	}
+
+	ctx, cancel := withDefaultTimeout(ctx, defaultAppPrimitiveTimeout)
+	defer cancel()
+
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "unix", manifest.SocketPath)
+	if err != nil {
+		return primitive.Result{}, err
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+
+	req := appRPCRequest{
+		ID:     r.requestID.Add(1),
+		Method: method,
+		Params: params,
+	}
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return primitive.Result{}, err
+	}
+
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return primitive.Result{}, err
+	}
+
+	var resp appRPCResponse
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return primitive.Result{}, err
+	}
+	if resp.Error != nil {
+		return primitive.Result{}, fmt.Errorf("app_primitive_error: %s", resp.Error.Message)
+	}
+
+	var data any
+	if len(resp.Result) > 0 && string(resp.Result) != "null" {
+		if err := json.Unmarshal(resp.Result, &data); err != nil {
+			return primitive.Result{}, err
+		}
+	}
+
+	return primitive.Result{
+		Data:     data,
+		Duration: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+type appRPCRequest struct {
+	ID     uint64          `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+type appRPCResponse struct {
+	ID     uint64          `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  *appRPCError    `json:"error"`
+}
+
+type appRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func withDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
 
 // RouterDriver delegates runtime operations to named child drivers.
 type RouterDriver struct {

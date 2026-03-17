@@ -5,12 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"primitivebox/internal/cvr"
 	"primitivebox/internal/eventing"
+	"primitivebox/internal/primitive/astdiff"
+	"primitivebox/internal/runtimectx"
 )
 
 // --------------------------------------------------------------------------
@@ -141,7 +145,15 @@ func (f *FSWrite) Schema() Schema {
 			},
 			"required":["path"]
 		}`),
-		Output: json.RawMessage(`{"type":"object","properties":{"bytes_written":{"type":"integer"},"diff":{"type":"string"}}}`),
+		Output: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"bytes_written":{"type":"integer"},
+				"diff":{"type":"string"},
+				"symbol_changes":{"type":"array"},
+				"effect_log":{"type":"array"}
+			}
+		}`),
 	}
 }
 
@@ -155,8 +167,10 @@ type fsWriteParams struct {
 }
 
 type FSWriteResult struct {
-	BytesWritten int    `json:"bytes_written"`
-	Diff         string `json:"diff,omitempty"`
+	BytesWritten  int                    `json:"bytes_written"`
+	Diff          string                 `json:"diff,omitempty"`
+	SymbolChanges []astdiff.SymbolChange `json:"symbol_changes,omitempty"`
+	EffectLog     []cvr.EffectEntry      `json:"effect_log,omitempty"`
 }
 
 func (f *FSWrite) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
@@ -179,9 +193,11 @@ func (f *FSWrite) Execute(ctx context.Context, params json.RawMessage) (Result, 
 
 	var newContent string
 	var oldContent string
+	var oldBytes []byte
 
 	// Read existing content for diff generation
 	if existing, err := os.ReadFile(absPath); err == nil {
+		oldBytes = append([]byte(nil), existing...)
 		oldContent = string(existing)
 	}
 
@@ -218,13 +234,40 @@ func (f *FSWrite) Execute(ctx context.Context, params json.RawMessage) (Result, 
 
 	// Generate simple diff
 	diff := generateSimpleDiff(oldContent, newContent)
+	payload := map[string]any{
+		"bytes_written": len(newContent),
+		"diff":          diff,
+	}
+
+	effectEntry := cvr.EffectEntry{
+		Kind:         "file_write",
+		Target:       p.Path,
+		ReversibleBy: "state.restore",
+	}
+
+	var warning string
+	if strings.HasSuffix(p.Path, ".go") {
+		changes, diffErr := astdiff.Diff(oldBytes, []byte(newContent))
+		if diffErr != nil {
+			warning = "ast diff failed: " + diffErr.Error()
+			log.Printf("warning: fs.write semantic diff skipped for %s: %v", p.Path, diffErr)
+		} else {
+			payload["symbol_changes"] = changes
+			symbols := collectSymbols(changes)
+			if len(symbols) > 0 {
+				effectEntry.AffectedSymbols = symbols
+				if intent, ok := runtimectx.IntentFromContext(ctx); ok && intent != nil {
+					intent.AffectedScopes = mergeUniqueStrings(intent.AffectedScopes, symbols)
+				}
+			}
+		}
+	}
+	payload["effect_log"] = []cvr.EffectEntry{effectEntry}
 
 	return Result{
-		Data: FSWriteResult{
-			BytesWritten: len(newContent),
-			Diff:         diff,
-		},
-		Diff: diff,
+		Data:    payload,
+		Diff:    diff,
+		Warning: warning,
 	}, nil
 }
 
@@ -389,6 +432,54 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func collectSymbols(changes []astdiff.SymbolChange) []string {
+	if len(changes) == 0 {
+		return nil
+	}
+	symbols := make([]string, 0, len(changes))
+	seen := make(map[string]struct{}, len(changes))
+	for _, change := range changes {
+		if change.Symbol == "" {
+			continue
+		}
+		if _, ok := seen[change.Symbol]; ok {
+			continue
+		}
+		seen[change.Symbol] = struct{}{}
+		symbols = append(symbols, change.Symbol)
+	}
+	return symbols
+}
+
+func mergeUniqueStrings(existing []string, values []string) []string {
+	if len(values) == 0 {
+		return existing
+	}
+	seen := make(map[string]struct{}, len(existing)+len(values))
+	merged := make([]string, 0, len(existing)+len(values))
+	for _, value := range existing {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		merged = append(merged, value)
+	}
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		merged = append(merged, value)
+	}
+	return merged
 }
 
 // --------------------------------------------------------------------------

@@ -129,6 +129,53 @@ Primary CLI commands:
 - `pb sandbox stop <id>`
 - `pb sandbox destroy <id>`
 
+## Architecture
+
+PrimitiveBox has a two-plane architecture separated by the container boundary.
+
+```
+┌─────────────────────────────────── Host (control plane) ────────────────────────────────────┐
+│                                                                                              │
+│   AI Agent / SDK ──► Gateway (JSON-RPC 2.0)  ──► Sandbox Proxy ──► SQLiteStore            │
+│                            │                                            │                  │
+│                       EventBus ◄──────────────────────────────────── Events                │
+│                            │                                                               │
+│                       SandboxManager ──► RouterDriver ──► DockerDriver / K8sDriver        │
+│                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+                                          │ HTTP proxy
+                                          ▼
+┌─────────────────────────────── Sandbox Container (execution plane) ────────────────────────┐
+│                                                                                             │
+│   pb server ──► SerialExecutor ──► Primitive Registry ──► System Primitives               │
+│        │               │               │                   (fs / shell / state /           │
+│        │          Level-0 CVR     App Adapters              verify / code / macro)         │
+│        │         (checkpoint /        │                                                    │
+│        │          verify /        App Process                                              │
+│        │          restore)     (Unix socket RPC)                                           │
+│        └──► CVRCoordinator (proposed)                                                      │
+│                  │                                                                         │
+│             VerifyStrategy + RecoveryDecisionTree + CheckpointManifest                    │
+│                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key invariants:**
+- The gateway is the control-plane boundary — it authenticates, persists, routes, and emits events, but never executes workspace primitives directly
+- All workspace-touching execution lives inside the sandbox `pb server`
+- SQLite is the sole durable store; events are append-only and are the source of truth
+- Every control-plane state mutation emits a corresponding event (write-and-emit rule)
+
+**Architecture documents** (`docs/arch/`):
+
+| Document | Contents |
+|---|---|
+| [`01_primitive_taxonomy.md`](docs/arch/01_primitive_taxonomy.md) | System / Code / Document primitive type hierarchy; `AIPrimitive` interface; Layer 1–3 schemas |
+| [`02_app_primitive_protocol.md`](docs/arch/02_app_primitive_protocol.md) | App primitive registration (Unix socket + JSON-RPC); AppRouter; Python + Go SDK |
+| [`03_cvr_loop.md`](docs/arch/03_cvr_loop.md) | CVR closed loop; CheckpointManifest; VerifyStrategy polymorphism; RecoveryDecisionTree |
+| [`04_event_observability.md`](docs/arch/04_event_observability.md) | 39-event type system; ExecutionTrace; Inspector API extensions; AI debug interface |
+| [`05_system_architecture.md`](docs/arch/05_system_architecture.md) | Full system diagram; module boundaries; 4 ADRs; implementation gap analysis |
+
 ## Development Notes
 
 ```bash
@@ -139,5 +186,5 @@ python3 -m pytest sdk/python/tests -q
 
 Additional repository guidance lives in:
 
-- [AGENTS.md](/Users/huaodong/TMP/primitivebox/AGENTS.md) for canonical repository intent and architecture rules
-- [CLAUDE.md](/Users/huaodong/TMP/primitivebox/CLAUDE.md) for concise assistant-facing execution guidance
+- [AGENTS.md](AGENTS.md) for canonical repository intent and architecture rules
+- [CLAUDE.md](CLAUDE.md) for concise assistant-facing execution guidance
