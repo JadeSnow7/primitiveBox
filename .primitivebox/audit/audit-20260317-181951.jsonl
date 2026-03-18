@@ -1,2 +1,4 @@
 {"timestamp":"2026-03-17T10:20:19.18989Z","method":"fs.read","input":{"path":"README.md"},"error":"file not found: README.md","duration":"59.416µs"}
 {"timestamp":"2026-03-17T10:24:49.122103Z","method":"fs.read","input":{"path":"README.md"},"error":"file not found: README.md","duration":"59.792µs"}
+{"timestamp":"2026-03-17T14:41:16.74857Z","method":"sandbox.app_primitives","input":null,"error":"Get \"http://127.0.0.1:49284/app-primitives\": dial tcp 127.0.0.1:49284: connect: connection refused","duration":"2.88725ms","metadata":{"sandbox_id":"sb-28c9344e","target_rpc":"http://127.0.0.1:49284/app-primitives"}}
+{"timestamp":"2026-03-17T14:41:16.758592Z","method":"sandbox.app_primitives","input":null,"error":"Get \"http://127.0.0.1:49284/app-primitives\": dial tcp 127.0.0.1:49284: connect: connection refused","duration":"241µs","metadata":{"sandbox_id":"sb-28c9344e","target_rpc":"http://127.0.0.1:49284/app-primitives"}}
