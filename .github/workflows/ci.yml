@@ -9,12 +9,8 @@ on:
 permissions:
   contents: read
 
-<<<<<<< HEAD
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-=======
->>>>>>> 0d2f260 (Update CI workflows and vendor example dependencies)
 jobs:
   go-test:
     runs-on: ubuntu-latest
