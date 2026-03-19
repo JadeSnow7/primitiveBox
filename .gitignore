@@ -1,11 +1,17 @@
 bin/
 dist/
 .primitivebox/
+.claude/worktrees/
 *.db
 sdk/python/dist/
 sdk/python/*.egg-info/
 sdk/python/__pycache__/
 sdk/python/tests/__pycache__/
+cmd/pb-ui/dist/
+cmd/pb-ui/node_modules/
+web/dist/
+web/node_modules/
+examples/auto_fix_bug/venv/
 __pycache__/
 *.pyc
 .env

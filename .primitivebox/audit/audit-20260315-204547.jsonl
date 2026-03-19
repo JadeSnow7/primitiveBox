@@ -1,1 +1,0 @@
-{"timestamp":"2026-03-15T12:45:53.870095Z","method":"sandbox.rpc","input":{"jsonrpc":"2.0","method":"fs.list","params":{"path":"."},"id":"k8s-smoke"},"duration":"12.559208ms","metadata":{"sandbox_id":"sb-080d34ca","target_rpc":"http://127.0.0.1:65406/rpc"}}

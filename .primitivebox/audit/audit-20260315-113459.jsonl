@@ -1,4 +1,0 @@
-{"timestamp":"2026-03-15T11:35:04.302255461Z","method":"browser.goto","input":{"url":"http://host.docker.internal:60604"},"output":{"session_id":"browser-957fbd61","url":"http://host.docker.internal:60604","title":""},"duration":"1.925668574s"}
-{"timestamp":"2026-03-15T11:35:04.371838016Z","method":"browser.extract","input":{"session_id":"browser-957fbd61","selector":"#title"},"error":"context canceled","duration":"2.146813ms"}
-{"timestamp":"2026-03-15T11:35:04.385755552Z","method":"browser.click","input":{"session_id":"browser-957fbd61","selector":"#go"},"error":"context canceled","duration":"1.834858ms"}
-{"timestamp":"2026-03-15T11:35:04.395920165Z","method":"browser.screenshot","input":{"session_id":"browser-957fbd61","full_page":true},"error":"context canceled","duration":"1.967815ms"}
