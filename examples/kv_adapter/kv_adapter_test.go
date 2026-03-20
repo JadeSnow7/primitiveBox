@@ -117,7 +117,7 @@ func TestValidation(t *testing.T) {
 	t.Run("CVR", func(t *testing.T) {
 		t.Run("CheckpointEnforcement", testCVRCheckpointEnforcement)
 		t.Run("IrreversibleDecision", testCVRIrreversibleDecision)
-		t.Run("VerifyEndpointUnused", testCVRVerifyEndpointUnused)
+		t.Run("VerifyEndpointInvoked", testCVRVerifyEndpointInvoked)
 		t.Run("RestoreDoesNotRollbackAdapterState", testCVRRestoreDoesNotRollbackAdapterState)
 		t.Run("MacroSafeEditIsNotGeneric", testCVRMacroSafeEditNotGeneric)
 		t.Run("RecoveryPolicy", testCVRRecoveryPolicy)
@@ -155,7 +155,7 @@ func testRegistrationBasicAndSchema(t *testing.T) {
 	if byName["kv.delete"].Intent.Reversible || byName["kv.delete"].Intent.RiskLevel != cvr.RiskHigh {
 		t.Fatalf("unexpected kv.delete intent: %+v", byName["kv.delete"].Intent)
 	}
-	if byName["kv.set"].VerifyEndpoint != "kv.get" {
+	if byName["kv.set"].VerifyEndpoint != "kv.verify" {
 		t.Fatalf("expected verify_endpoint to round-trip, got %+v", byName["kv.set"])
 	}
 	if byName["kv.delete"].RollbackEndpoint != "state.restore" {
@@ -816,7 +816,7 @@ func testCVRIrreversibleDecision(t *testing.T) {
 	}
 }
 
-func testCVRVerifyEndpointUnused(t *testing.T) {
+func testCVRVerifyEndpointInvoked(t *testing.T) {
 	env := newValidationEnv(t)
 
 	socketPath := uniqueSocketPath(t, "counting")
@@ -830,7 +830,7 @@ func testCVRVerifyEndpointUnused(t *testing.T) {
 		InputSchema:      json.RawMessage(`{"type":"object"}`),
 		OutputSchema:     json.RawMessage(`{"type":"object"}`),
 		SocketPath:       socketPath,
-		VerifyEndpoint:   "kv.get",
+		VerifyEndpoint:   "kv.verify",
 		RollbackEndpoint: "state.restore",
 		Intent: cvr.PrimitiveIntent{
 			Category:   cvr.IntentMutation,
@@ -840,8 +840,8 @@ func testCVRVerifyEndpointUnused(t *testing.T) {
 	})
 	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
 		AppID:        "counting-kv",
-		Name:         "kv.get",
-		Description:  "counting kv.get",
+		Name:         "kv.verify",
+		Description:  "counting kv.verify",
 		InputSchema:  json.RawMessage(`{"type":"object"}`),
 		OutputSchema: json.RawMessage(`{"type":"object"}`),
 		SocketPath:   socketPath,
@@ -865,8 +865,8 @@ func testCVRVerifyEndpointUnused(t *testing.T) {
 	if err := engine.RunTask(context.Background(), task); err != nil {
 		t.Fatalf("engine run failed: %v", err)
 	}
-	if counting.CallCount("kv.get") != 0 {
-		t.Fatalf("expected verify_endpoint to be ignored by current CVR path, got kv.get count=%d", counting.CallCount("kv.get"))
+	if counting.CallCount("kv.verify") == 0 {
+		t.Fatal("expected verify_endpoint to be invoked by router CVR path")
 	}
 	if counting.CallCount("kv.set") == 0 {
 		t.Fatal("expected kv.set to be called at least once")

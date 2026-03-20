@@ -105,7 +105,7 @@
       "required": ["stored", "key", "previous_exists"]
     },
     "socket_path": "/tmp/pb-kv.sock",
-    "verify_endpoint": "kv.get",
+    "verify_endpoint": "kv.verify",
     "rollback_endpoint": "state.restore",
     "intent": {
       "category": "mutation",
