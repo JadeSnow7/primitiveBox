@@ -71,16 +71,44 @@ func (r *Router) currentAppRegistry() primitive.AppPrimitiveRegistry {
 }
 
 func (r *Router) routeAppPrimitive(ctx context.Context, manifest primitive.AppPrimitiveManifest, method string, params json.RawMessage) (primitive.Result, error) {
+	ctx, cancel := withDefaultTimeout(ctx, defaultAppPrimitiveTimeout)
+	defer cancel()
+
 	start := time.Now()
+	result, err := r.callAppSocket(ctx, manifest.SocketPath, method, params)
+	if err != nil {
+		return primitive.Result{}, err
+	}
+
+	// If the manifest declares a verify endpoint, call it now.
+	// A failed verify triggers rollback (if declared) and returns an error.
+	if manifest.VerifyEndpoint != "" {
+		verifyResult, verifyErr := r.callAppSocket(ctx, manifest.SocketPath, manifest.VerifyEndpoint, json.RawMessage("{}"))
+		passed := verifyErr == nil && appResultPassed(verifyResult.Data)
+		if !passed {
+			if manifest.RollbackEndpoint != "" {
+				_, _ = r.callAppSocket(ctx, manifest.SocketPath, manifest.RollbackEndpoint, json.RawMessage("{}"))
+			}
+			if verifyErr != nil {
+				return primitive.Result{}, fmt.Errorf("app_primitive_verify_error: %s", verifyErr.Error())
+			}
+			return primitive.Result{}, errors.New("app_primitive_verify_failed")
+		}
+	}
+
+	result.Duration = time.Since(start).Milliseconds()
+	return result, nil
+}
+
+// callAppSocket opens a fresh Unix socket connection, sends one JSON-RPC
+// request, and returns the decoded result. One connection per call.
+func (r *Router) callAppSocket(ctx context.Context, socketPath, method string, params json.RawMessage) (primitive.Result, error) {
 	if len(params) == 0 {
 		params = json.RawMessage("{}")
 	}
 
-	ctx, cancel := withDefaultTimeout(ctx, defaultAppPrimitiveTimeout)
-	defer cancel()
-
 	dialer := &net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "unix", manifest.SocketPath)
+	conn, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		return primitive.Result{}, err
 	}
@@ -119,10 +147,21 @@ func (r *Router) routeAppPrimitive(ctx context.Context, manifest primitive.AppPr
 		}
 	}
 
-	return primitive.Result{
-		Data:     data,
-		Duration: time.Since(start).Milliseconds(),
-	}, nil
+	return primitive.Result{Data: data}, nil
+}
+
+// appResultPassed extracts the "passed" boolean from a verify result.
+// Returns true if the field is absent (no explicit failure) or true.
+func appResultPassed(data any) bool {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return true
+	}
+	passed, ok := m["passed"].(bool)
+	if !ok {
+		return true
+	}
+	return passed
 }
 
 type appRPCRequest struct {

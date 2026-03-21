@@ -1,0 +1,476 @@
+[
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.get",
+    "description": "Read a single key from the adapter-managed key-value store.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "default": { "type": "string" },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["key"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "found": { "type": "boolean" },
+        "key": { "type": "string" },
+        "value": { "type": "string" },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "content_type": { "type": "string" },
+            "labels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "tags": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "version": { "type": "integer" }
+          }
+        },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["found", "key", "value"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "intent": {
+      "category": "query",
+      "reversible": true,
+      "risk_level": "low",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.set",
+    "description": "Create or update one key in the adapter-managed key-value store.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" },
+        "mode": {
+          "type": "string",
+          "enum": ["create", "upsert"]
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "content_type": { "type": "string" },
+            "labels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "tags": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "version": { "type": "integer" }
+          }
+        },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["key", "value"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "stored": { "type": "boolean" },
+        "key": { "type": "string" },
+        "previous_exists": { "type": "boolean" },
+        "previous_value": { "type": "string" },
+        "size_bytes": { "type": "integer" },
+        "value_sha256": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["stored", "key", "previous_exists"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "verify_endpoint": "kv.verify",
+    "rollback_endpoint": "state.restore",
+    "intent": {
+      "category": "mutation",
+      "reversible": true,
+      "risk_level": "medium",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.delete",
+    "description": "Delete one key from the adapter-managed key-value store.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["key"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "deleted": { "type": "boolean" },
+        "key": { "type": "string" },
+        "previous_value": { "type": "string" }
+      },
+      "required": ["deleted", "key"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "rollback_endpoint": "state.restore",
+    "intent": {
+      "category": "mutation",
+      "reversible": false,
+      "risk_level": "high",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.list",
+    "description": "List keys, with optional prefix filtering and optional inline values.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "prefix": { "type": "string" },
+        "limit": { "type": "integer", "minimum": 0 },
+        "include_value": { "type": "boolean" },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": { "type": "string" },
+              "value": { "type": "string" },
+              "metadata": {
+                "type": "object",
+                "properties": {
+                  "content_type": { "type": "string" },
+                  "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "version": { "type": "integer" }
+                }
+              },
+              "updated_at": { "type": "string" }
+            },
+            "required": ["key"]
+          }
+        },
+        "count": { "type": "integer" }
+      },
+      "required": ["entries", "count"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "intent": {
+      "category": "query",
+      "reversible": true,
+      "risk_level": "low",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.exists",
+    "description": "Check whether a key exists without returning the stored value.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["key"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "exists": { "type": "boolean" }
+      },
+      "required": ["key", "exists"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "intent": {
+      "category": "query",
+      "reversible": true,
+      "risk_level": "low",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.batch_set",
+    "description": "Write multiple key-value pairs in a single request.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["create", "upsert"]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": { "type": "string" },
+              "value": { "type": "string" },
+              "metadata": {
+                "type": "object",
+                "properties": {
+                  "content_type": { "type": "string" },
+                  "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "version": { "type": "integer" }
+                }
+              }
+            },
+            "required": ["key", "value"]
+          }
+        },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["entries"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "stored": { "type": "integer" },
+        "created": { "type": "integer" },
+        "entry_count": { "type": "integer" },
+        "completed_at": { "type": "string" }
+      },
+      "required": ["stored", "created", "entry_count"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "verify_endpoint": "kv.verify",
+    "rollback_endpoint": "state.restore",
+    "intent": {
+      "category": "mutation",
+      "reversible": true,
+      "risk_level": "high",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.export",
+    "description": "Dump the full key-value store as structured JSON.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["entries", "map"]
+        },
+        "include_metadata": { "type": "boolean" },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "format": { "type": "string" },
+        "entry_count": { "type": "integer" },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": { "type": "string" },
+              "value": { "type": "string" }
+            }
+          }
+        },
+        "items": {
+          "type": "object"
+        }
+      },
+      "required": ["format", "entry_count"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "intent": {
+      "category": "query",
+      "reversible": true,
+      "risk_level": "low",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.import",
+    "description": "Replace or merge the adapter-managed key-value store from structured JSON input.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["replace", "merge"]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": { "type": "string" },
+              "value": { "type": "string" },
+              "metadata": {
+                "type": "object",
+                "properties": {
+                  "content_type": { "type": "string" },
+                  "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "version": { "type": "integer" }
+                }
+              }
+            },
+            "required": ["key", "value"]
+          }
+        },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["entries"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "imported": { "type": "integer" },
+        "mode": { "type": "string" },
+        "completed_at": { "type": "string" }
+      },
+      "required": ["imported", "mode"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "verify_endpoint": "kv.verify",
+    "rollback_endpoint": "state.restore",
+    "intent": {
+      "category": "mutation",
+      "reversible": false,
+      "risk_level": "high",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.verify",
+    "description": "Verify basic integrity for the adapter-managed key-value store.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "expected_count": { "type": "integer", "minimum": 0 },
+        "test_control": {
+          "type": "object",
+          "properties": {
+            "delay_ms": { "type": "integer", "minimum": 0 },
+            "error_code": { "type": "integer" },
+            "error_message": { "type": "string" }
+          }
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "consistent": { "type": "boolean" },
+        "entry_count": { "type": "integer" },
+        "checksum": { "type": "string" },
+        "problems": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["consistent", "entry_count", "checksum", "problems"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "intent": {
+      "category": "query",
+      "reversible": true,
+      "risk_level": "low",
+      "affected_scopes": ["app:kv"]
+    }
+  }
+]

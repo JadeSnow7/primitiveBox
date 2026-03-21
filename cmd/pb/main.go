@@ -142,7 +142,13 @@ func runServer(host string, port int, workspaceDir string, sandboxMode, serveUI 
 	defer store.Close()
 
 	bus := eventing.NewBus(store)
-	manager := newManager(cfg, store, bus)
+
+	// In sandbox mode the server is the in-container executor; it has no
+	// sandbox manager of its own and must accept app.register calls.
+	var manager *sandbox.Manager
+	if !sandboxMode {
+		manager = newManager(cfg, store, bus)
+	}
 
 	server := rpc.NewServer(registry, auditor, manager)
 	server.AttachEventing(bus, store)
@@ -174,7 +180,9 @@ func runServer(host string, port int, workspaceDir string, sandboxMode, serveUI 
 		log.Println("[PrimitiveBox] Shutting down...")
 		_ = server.Shutdown(context.Background())
 	}()
-	go manager.RunReaper(ctx, time.Duration(cfg.Control.ReaperIntervalSeconds)*time.Second)
+	if manager != nil {
+		go manager.RunReaper(ctx, time.Duration(cfg.Control.ReaperIntervalSeconds)*time.Second)
+	}
 
 	log.Printf("[PrimitiveBox] Starting gateway on %s", addr)
 	serveErr := server.ListenAndServe(addr)
