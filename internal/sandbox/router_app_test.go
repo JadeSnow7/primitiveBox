@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"primitivebox/internal/primitive"
 )
@@ -48,9 +46,11 @@ func TestAppRouter_AppPrimitive_Success(t *testing.T) {
 	})
 
 	if err := registry.Register(context.Background(), primitive.AppPrimitiveManifest{
-		AppID:      "myapp",
-		Name:       "myapp.greet",
-		SocketPath: socketPath,
+		AppID:        "myapp",
+		Name:         "myapp.greet",
+		InputSchema:  json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}}}`),
+		SocketPath:   socketPath,
 	}); err != nil {
 		t.Fatalf("register manifest: %v", err)
 	}
@@ -77,9 +77,11 @@ func TestAppRouter_AppPrimitive_SocketUnreachable(t *testing.T) {
 
 	registry := primitive.NewInMemoryAppRegistry()
 	if err := registry.Register(context.Background(), primitive.AppPrimitiveManifest{
-		AppID:      "myapp",
-		Name:       "myapp.greet",
-		SocketPath: "/tmp/primitivebox-no-such-socket.sock",
+		AppID:        "myapp",
+		Name:         "myapp.greet",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/primitivebox-no-such-socket.sock",
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -90,6 +92,32 @@ func TestAppRouter_AppPrimitive_SocketUnreachable(t *testing.T) {
 	_, err := router.Route(context.Background(), "myapp.greet", json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error when socket is unreachable")
+	}
+	pe, ok := err.(*primitive.PrimitiveError)
+	if !ok {
+		t.Fatalf("expected PrimitiveError, got %T", err)
+	}
+	if pe.Message != "adapter myapp is unavailable" {
+		t.Fatalf("unexpected unavailable message: %s", pe.Message)
+	}
+	got, err := registry.Get(context.Background(), "myapp.greet")
+	if err != nil {
+		t.Fatalf("get manifest after dial failure: %v", err)
+	}
+	if got == nil || got.Availability != primitive.AppPrimitiveUnavailable {
+		t.Fatalf("expected manifest to be marked unavailable, got %+v", got)
+	}
+
+	_, err = router.Route(context.Background(), "myapp.greet", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected cached unavailable error on second call")
+	}
+	pe, ok = err.(*primitive.PrimitiveError)
+	if !ok {
+		t.Fatalf("expected PrimitiveError on second call, got %T", err)
+	}
+	if pe.Message != "adapter myapp is unavailable" {
+		t.Fatalf("unexpected cached unavailable message: %s", pe.Message)
 	}
 }
 
@@ -107,9 +135,11 @@ func TestAppRouter_AppPrimitive_RPCError(t *testing.T) {
 	})
 
 	if err := registry.Register(context.Background(), primitive.AppPrimitiveManifest{
-		AppID:      "myapp",
-		Name:       "myapp.greet",
-		SocketPath: socketPath,
+		AppID:        "myapp",
+		Name:         "myapp.greet",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -135,6 +165,7 @@ func TestAppRouter_AppPrimitive_MalformedResponse(t *testing.T) {
 	// Start a socket that writes invalid JSON.
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
+		skipIfListenUnavailable(t, err)
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
@@ -151,9 +182,11 @@ func TestAppRouter_AppPrimitive_MalformedResponse(t *testing.T) {
 	}()
 
 	if err := registry.Register(context.Background(), primitive.AppPrimitiveManifest{
-		AppID:      "myapp",
-		Name:       "myapp.greet",
-		SocketPath: socketPath,
+		AppID:        "myapp",
+		Name:         "myapp.greet",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -170,7 +203,13 @@ func TestAppRouter_AppPrimitive_MalformedResponse(t *testing.T) {
 func shortSocketPath(t *testing.T) string {
 	t.Helper()
 
-	path := fmt.Sprintf("/tmp/primitivebox-%d.sock", time.Now().UnixNano())
+	file, err := os.CreateTemp("", "pb-app-*.sock")
+	if err != nil {
+		t.Fatalf("create temp socket path: %v", err)
+	}
+	path := file.Name()
+	_ = file.Close()
+	_ = os.Remove(path)
 	t.Cleanup(func() {
 		_ = os.Remove(path)
 	})
@@ -182,6 +221,7 @@ func startTestAppSocket(t *testing.T, socketPath string, handler func(map[string
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
+		skipIfListenUnavailable(t, err)
 		t.Fatalf("listen on unix socket: %v", err)
 	}
 	t.Cleanup(func() {
@@ -212,4 +252,11 @@ func startTestAppSocket(t *testing.T, socketPath string, handler func(map[string
 		}
 		_, _ = conn.Write(append(data, '\n'))
 	}()
+}
+
+func skipIfListenUnavailable(t *testing.T, err error) {
+	t.Helper()
+	if strings.Contains(err.Error(), "bind: operation not permitted") {
+		t.Skipf("skipping test: unix socket listen unavailable in current environment: %v", err)
+	}
 }

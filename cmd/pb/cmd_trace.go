@@ -38,7 +38,9 @@ func newTraceCmd() *cobra.Command {
 				}
 				if jsonMode {
 					var v any
-					json.Unmarshal(data, &v)
+					if err := json.Unmarshal(data, &v); err != nil {
+						return fmt.Errorf("decode trace detail response: %w", err)
+					}
 					printJSON(v)
 					return nil
 				}
@@ -61,7 +63,9 @@ func newTraceCmd() *cobra.Command {
 
 			if jsonMode {
 				var v any
-				json.Unmarshal(data, &v)
+				if err := json.Unmarshal(data, &v); err != nil {
+					return fmt.Errorf("decode trace list response: %w", err)
+				}
 				printJSON(v)
 				return nil
 			}
@@ -80,12 +84,12 @@ func newTraceCmd() *cobra.Command {
 
 func printTraceList(data []byte) error {
 	var steps []struct {
-		ID             string `json:"id"`
-		PrimitiveID    string `json:"primitive_id"`
-		LayerAOutcome  string `json:"layer_a_outcome"`
-		StrategyName   string `json:"strategy_name"`
-		RecoveryPath   string `json:"recovery_path"`
-		DurationMS     int64  `json:"duration_ms"`
+		ID            string `json:"id"`
+		PrimitiveID   string `json:"primitive_id"`
+		LayerAOutcome string `json:"layer_a_outcome"`
+		StrategyName  string `json:"strategy_name"`
+		RecoveryPath  string `json:"recovery_path"`
+		DurationMS    int64  `json:"duration_ms"`
 	}
 
 	// Try array directly or wrapped
@@ -94,11 +98,15 @@ func printTraceList(data []byte) error {
 			Steps json.RawMessage `json:"steps"`
 		}
 		if err2 := json.Unmarshal(data, &wrapper); err2 == nil {
-			json.Unmarshal(wrapper.Steps, &steps)
+			if err3 := json.Unmarshal(wrapper.Steps, &steps); err3 != nil {
+				return fmt.Errorf("decode trace steps: %w", err3)
+			}
 		} else {
 			// Fallback to raw
 			var v any
-			json.Unmarshal(data, &v)
+			if err3 := json.Unmarshal(data, &v); err3 != nil {
+				return fmt.Errorf("decode trace payload: %w", err3)
+			}
 			printJSON(v)
 			return nil
 		}
@@ -150,7 +158,9 @@ func printTraceDetail(data []byte) error {
 	}
 	if err := json.Unmarshal(data, &step); err != nil {
 		var v any
-		json.Unmarshal(data, &v)
+		if err2 := json.Unmarshal(data, &v); err2 != nil {
+			return fmt.Errorf("decode trace detail payload: %w", err2)
+		}
 		printJSON(v)
 		return nil
 	}

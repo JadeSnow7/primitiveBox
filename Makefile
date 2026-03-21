@@ -1,15 +1,25 @@
-.PHONY: build test clean run sdk-test sandbox-image sandbox-browser-image ui-build demo
+.PHONY: build test lint clean run sdk-test sandbox-image sandbox-browser-image ui-build demo
+
+GOLANGCI_LINT_VERSION ?= $(shell cat .golangci-version 2>/dev/null)
+GO_BUILD_CACHE ?= /tmp/primitivebox-go-build-cache
 
 build:
-	go build -o bin/pb ./cmd/pb/
-	go build -o bin/pb-runtimed ./cmd/pb-runtimed/
-	go build -o bin/pb-repo-adapter ./cmd/pb-repo-adapter/
+	mkdir -p $(GO_BUILD_CACHE)
+	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb ./cmd/pb/
+	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-runtimed ./cmd/pb-runtimed/
+	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-test-adapter ./cmd/pb-test-adapter/
+	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-repo-adapter ./cmd/pb-repo-adapter/
 
 run: build
 	./bin/pb server start --workspace .
 
 test:
-	go test ./... -v
+	mkdir -p $(GO_BUILD_CACHE)
+	GOCACHE=$(GO_BUILD_CACHE) go test ./... -v
+
+lint:
+	@echo "Expected golangci-lint version: $(GOLANGCI_LINT_VERSION)"
+	./scripts/lint.sh
 
 sdk-test:
 	python3 -m pytest sdk/python/tests -q
@@ -18,9 +28,11 @@ ui-build:
 	cd cmd/pb-ui && npm run build
 
 sandbox-image: build
-	GOOS=linux GOARCH=arm64 go build -o bin/pb-linux-arm64 ./cmd/pb
-	GOOS=linux GOARCH=arm64 go build -o bin/pb-runtimed-linux-arm64 ./cmd/pb-runtimed
-	GOOS=linux GOARCH=arm64 go build -o bin/pb-repo-adapter-linux-arm64 ./cmd/pb-repo-adapter
+	mkdir -p $(GO_BUILD_CACHE)
+	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-linux-arm64 ./cmd/pb
+	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-runtimed-linux-arm64 ./cmd/pb-runtimed
+	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-test-adapter-linux-arm64 ./cmd/pb-test-adapter
+	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-repo-adapter-linux-arm64 ./cmd/pb-repo-adapter
 	docker build -f testdata/docker/Dockerfile -t primitivebox-sandbox:latest .
 
 sandbox-browser-image: sandbox-image
@@ -37,4 +49,5 @@ clean:
 	rm -rf .primitivebox/
 
 fmt:
-	go fmt ./...
+	mkdir -p $(GO_BUILD_CACHE)
+	GOCACHE=$(GO_BUILD_CACHE) go fmt ./...

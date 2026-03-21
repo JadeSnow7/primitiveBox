@@ -115,6 +115,7 @@ Primary routes:
 - `POST /sandboxes/{id}/rpc/stream`
 - `GET /health`
 - `GET /primitives`
+- `GET /app-primitives`
 - `GET /api/v1/sandboxes`
 - `GET /api/v1/sandboxes/{id}`
 - `GET /api/v1/events`
@@ -179,10 +180,17 @@ PrimitiveBox has a two-plane architecture separated by the container boundary.
 ## Development Notes
 
 ```bash
-go build ./...
-go test ./...
-python3 -m pytest sdk/python/tests -q
+make build
+make test
+make sdk-test
+make lint
 ```
+
+`make build` and `make test` use a repository-owned Go build cache path so they are more stable in restricted local sandboxes and CI runners.
+
+`make lint` runs `./scripts/lint.sh`, which reads the pinned linter version from `.golangci-version`, uses the Go version declared in `go.mod`, and configures writable cache directories for both `golangci-lint` and the Go toolchain. If `golangci-lint` is not installed locally, the script prints the exact `go install ...@version` command to use.
+
+Some integration-style Go tests open local TCP or Unix listeners. In environments that forbid `bind` or local socket creation, those tests now skip with an explicit reason instead of failing the whole suite. In a normal developer environment or GitHub Actions runner, they still execute normally.
 
 Additional repository guidance lives in:
 

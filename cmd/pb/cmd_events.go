@@ -43,7 +43,14 @@ func newEventsCmd() *cobra.Command {
 					Message   string `json:"message"`
 					Timestamp string `json:"timestamp"`
 				}
-				json.Unmarshal([]byte(data), &ev)
+				if err := json.Unmarshal([]byte(data), &ev); err != nil {
+					if jsonMode {
+						fmt.Println(data)
+					} else {
+						fmt.Fprintln(os.Stdout, data)
+					}
+					return nil
+				}
 
 				// Apply filters
 				if sandboxID != "" && ev.SandboxID != sandboxID {

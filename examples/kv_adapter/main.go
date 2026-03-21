@@ -502,9 +502,10 @@ func newKVAdapter(store kvStore) *kvAdapter {
 }
 
 type getParams struct {
-	Key         string      `json:"key"`
-	Default     *string     `json:"default,omitempty"`
-	TestControl testControl `json:"test_control,omitempty"`
+	Key           string        `json:"key"`
+	Default       *string       `json:"default,omitempty"`
+	VerifyControl verifyControl `json:"verify_control,omitempty"`
+	TestControl   testControl   `json:"test_control,omitempty"`
 }
 
 type setParams struct {
@@ -561,6 +562,28 @@ type importParams struct {
 type verifyParams struct {
 	ExpectedCount *int        `json:"expected_count,omitempty"`
 	TestControl   testControl `json:"test_control,omitempty"`
+}
+
+type verifyControl struct {
+	ForceFail bool   `json:"force_fail,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+type rollbackEnvelope struct {
+	Primitive    string `json:"primitive"`
+	CheckpointID string `json:"checkpoint_id,omitempty"`
+	Params       struct {
+		Key string `json:"key"`
+	} `json:"params"`
+	Result struct {
+		PreviousExists   bool          `json:"previous_exists"`
+		PreviousValue    string        `json:"previous_value"`
+		PreviousMetadata entryMetadata `json:"previous_metadata"`
+	} `json:"result"`
+	Verify struct {
+		Outcome string `json:"outcome,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"verify"`
 }
 
 func main() {
@@ -673,6 +696,13 @@ func loadManifest(path, appID, namespace, socketPath string) ([]primitive.AppPri
 		manifest.Name = qualifyName(namespace, manifest.Name)
 		manifest.SocketPath = socketPath
 		manifest.VerifyEndpoint = qualifyOptionalName(namespace, manifest.VerifyEndpoint)
+		if manifest.Verify != nil && strings.TrimSpace(manifest.Verify.Strategy) == "primitive" {
+			manifest.Verify.Primitive = qualifyOptionalName(namespace, manifest.Verify.Primitive)
+		}
+		manifest.RollbackEndpoint = qualifyOptionalName(namespace, manifest.RollbackEndpoint)
+		if manifest.Rollback != nil && strings.TrimSpace(manifest.Rollback.Strategy) == "primitive" {
+			manifest.Rollback.Primitive = qualifyOptionalName(namespace, manifest.Rollback.Primitive)
+		}
 		out = append(out, manifest)
 	}
 	return out, nil
@@ -826,6 +856,8 @@ func (a *kvAdapter) dispatch(ctx context.Context, method string, raw json.RawMes
 		return a.handleImport(ctx, raw)
 	case "kv.verify":
 		return a.handleVerify(ctx, raw)
+	case "kv.rollback_set":
+		return a.handleRollbackSet(ctx, raw)
 	default:
 		return nil, &appRPCError{Code: -32601, Message: "method not found: " + method}
 	}
@@ -841,6 +873,13 @@ func (a *kvAdapter) handleGet(ctx context.Context, raw json.RawMessage) (any, *a
 	}
 	if strings.TrimSpace(params.Key) == "" {
 		return nil, &appRPCError{Code: -32602, Message: "key is required"}
+	}
+	if params.VerifyControl.ForceFail {
+		message := strings.TrimSpace(params.VerifyControl.Message)
+		if message == "" {
+			message = "verify_control forced failure"
+		}
+		return nil, &appRPCError{Code: 4093, Message: message}
 	}
 	entry, ok, err := a.store.Get(ctx, params.Key)
 	if err != nil {
@@ -912,13 +951,14 @@ func (a *kvAdapter) handleSet(ctx context.Context, raw json.RawMessage) (any, *a
 		return nil, internalRPCError(err)
 	}
 	return map[string]any{
-		"stored":          true,
-		"key":             params.Key,
-		"previous_exists": exists,
-		"previous_value":  prev.Value,
-		"size_bytes":      len(params.Value),
-		"value_sha256":    digestString(params.Value),
-		"updated_at":      now,
+		"stored":            true,
+		"key":               params.Key,
+		"previous_exists":   exists,
+		"previous_value":    prev.Value,
+		"previous_metadata": prev.Metadata,
+		"size_bytes":        len(params.Value),
+		"value_sha256":      digestString(params.Value),
+		"updated_at":        now,
 	}, nil
 }
 
@@ -1154,6 +1194,49 @@ func (a *kvAdapter) handleVerify(ctx context.Context, raw json.RawMessage) (any,
 		"checksum":    checksum,
 		"problems":    problems,
 	}, nil
+}
+
+func (a *kvAdapter) handleRollbackSet(ctx context.Context, raw json.RawMessage) (any, *appRPCError) {
+	var params rollbackEnvelope
+	if err := decodeParams(raw, &params); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(params.Params.Key) == "" {
+		return nil, &appRPCError{Code: -32602, Message: "rollback params.key is required"}
+	}
+
+	if params.Result.PreviousExists || params.Result.PreviousValue != "" || !metadataEmpty(params.Result.PreviousMetadata) {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		entry := kvEntry{
+			Key:       params.Params.Key,
+			Value:     params.Result.PreviousValue,
+			Metadata:  cloneMetadata(params.Result.PreviousMetadata),
+			UpdatedAt: now,
+		}
+		_, _, err := a.store.Upsert(ctx, entry)
+		if err != nil {
+			return nil, internalRPCError(err)
+		}
+		return map[string]any{
+			"rolled_back": true,
+			"key":         params.Params.Key,
+			"action":      "restore_previous_value",
+		}, nil
+	}
+
+	_, _, err := a.store.Delete(ctx, params.Params.Key)
+	if err != nil {
+		return nil, internalRPCError(err)
+	}
+	return map[string]any{
+		"rolled_back": true,
+		"key":         params.Params.Key,
+		"action":      "delete_created_value",
+	}, nil
+}
+
+func metadataEmpty(meta entryMetadata) bool {
+	return meta.ContentType == "" && len(meta.Labels) == 0 && len(meta.Tags) == 0 && meta.Version == 0
 }
 
 func decodeParams(raw json.RawMessage, target any) *appRPCError {

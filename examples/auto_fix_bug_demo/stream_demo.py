@@ -1,66 +1,70 @@
 """
 PrimitiveBox CVR Event Stream Demo
-===================================
-Run alongside run_demo.py to see real-time CVR events via SSE.
+==================================
+Run alongside run_demo.py to watch live gateway events over SSE.
 
 Usage:
-    python3 stream_demo.py
+    export PB_HOST="http://127.0.0.1:8091"
+    python3 examples/auto_fix_bug_demo/stream_demo.py
 """
 
-import os
-from primitivebox import PrimitiveBoxClient
+from __future__ import annotations
 
-PB_HOST = os.getenv("PB_HOST", "http://localhost:8080")
-pb = PrimitiveBoxClient(PB_HOST)
+import json
+import os
+import urllib.request
+
+
+PB_HOST = os.getenv("PB_HOST", "http://127.0.0.1:8091").rstrip("/")
 
 ICONS = {
-    "primitive.start": "▶",
-    "primitive.complete": "✓",
-    "cvr.checkpoint": "📌",
-    "cvr.verify.pass": "✅",
-    "cvr.verify.fail": "❌",
-    "cvr.recover.rollback": "↩",
-    "cvr.recover.retry": "🔄",
-    "cvr.recover.escalate": "⚠",
+    "rpc.started": "▶",
+    "rpc.completed": "✓",
+    "rpc.error": "✗",
+    "checkpoint.created": "📌",
+    "checkpoint.restored": "↩",
+    "shell.output": "·",
 }
+
+
+def iter_sse(url: str):
+    req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
+    with urllib.request.urlopen(req, timeout=300) as response:
+        event_name = "message"
+        data_lines: list[str] = []
+        for raw_line in response:
+            line = raw_line.decode("utf-8").rstrip("\n")
+            if line == "":
+                if data_lines:
+                    yield event_name, json.loads("\n".join(data_lines))
+                    event_name = "message"
+                    data_lines = []
+                continue
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+
 
 print("─" * 50)
 print("  PrimitiveBox CVR Event Stream")
 print("─" * 50)
-print("  Listening for events...\n")
+print(f"  Listening on {PB_HOST}/api/v1/events/stream\n")
 
 try:
-    for event in pb.events.stream():
-        etype = event.get("type", "unknown")
-        icon = ICONS.get(etype, "·")
+    for event_type, payload in iter_sse(PB_HOST + "/api/v1/events/stream"):
+        icon = ICONS.get(event_type, "·")
+        method = payload.get("method", "")
+        message = payload.get("message", "")
 
-        if etype == "primitive.start":
-            prim = event.get("primitive", "?")
-            risk = event.get("risk_level", "?")
-            print(f"  {icon} {prim}  (risk: {risk})")
-
-        elif etype == "primitive.complete":
-            prim = event.get("primitive", "?")
-            dur = event.get("duration_ms", "?")
-            print(f"  {icon} {prim} done ({dur}ms)")
-
-        elif etype == "cvr.checkpoint":
-            cid = event.get("checkpoint_id", "?")
-            label = event.get("label", "")
-            print(f"  {icon} Checkpoint: {cid} ({label})")
-
-        elif etype in ("cvr.verify.pass", "cvr.verify.fail"):
-            summary = event.get("summary", "")
-            print(f"  {icon} Verify: {summary}")
-
-        elif etype.startswith("cvr.recover"):
-            action = event.get("action", "?")
-            reason = event.get("reason", "")
-            print(f"  {icon} Recover: {action} — {reason}")
-
+        if event_type == "shell.output":
+            stream = payload.get("stream", "stdout")
+            print(f"  {icon} {stream}: {message}")
+        elif event_type in {"checkpoint.created", "checkpoint.restored"}:
+            print(f"  {icon} {event_type}: {message}")
+        elif method:
+            print(f"  {icon} {event_type}: {method}")
         else:
-            detail = str(event)[:100]
-            print(f"  {icon} {etype}: {detail}")
-
+            print(f"  {icon} {event_type}: {message}")
 except KeyboardInterrupt:
-    print("\n\n  Stream stopped.")
+    print("\nStream stopped.")

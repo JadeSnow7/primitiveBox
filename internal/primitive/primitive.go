@@ -49,6 +49,7 @@ type Schema struct {
 	VerifierHint       string          `json:"verifier_hint,omitempty"`
 	Source             string          `json:"source,omitempty"`
 	Adapter            string          `json:"adapter,omitempty"`
+	Status             string          `json:"status,omitempty"`
 }
 
 // Result wraps the structured output of a primitive execution.

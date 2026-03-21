@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"primitivebox/internal/control"
+	"primitivebox/internal/cvr"
 	"primitivebox/internal/eventing"
 	"primitivebox/internal/primitive"
 	"primitivebox/internal/runtrace"
@@ -67,6 +69,110 @@ func TestAPIEventsListsPersistedEvents(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body.String(), `"shell.output"`) {
 		t.Fatalf("expected shell.output event, got %s", resp.Body.String())
+	}
+}
+
+func TestAPIEventsExposeAdapterLifecycle(t *testing.T) {
+	t.Parallel()
+
+	store, err := control.OpenSQLiteStore(t.TempDir() + "/controlplane.db")
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	bus := eventing.NewBus(store)
+	server := NewServer(primitive.NewRegistry(), nil, nil)
+	server.AttachEventing(bus, store)
+	server.RegisterAppRegistry(control.NewSQLiteAppRegistry(store, bus))
+
+	appRegistry := server.appRegistry
+	manifest := primitive.AppPrimitiveManifest{
+		AppID:        "kv-app",
+		Name:         "kv.get",
+		Description:  "Fetch a key.",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/kv.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	}
+	if err := appRegistry.Register(context.Background(), manifest); err != nil {
+		t.Fatalf("register adapter: %v", err)
+	}
+	if err := appRegistry.MarkUnavailable(context.Background(), manifest.AppID); err != nil {
+		t.Fatalf("mark adapter unavailable: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?type=adapter.unavailable&limit=10", nil)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"type":"adapter.unavailable"`) {
+		t.Fatalf("expected adapter.unavailable event, got %s", resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"app_id":"kv-app"`) {
+		t.Fatalf("expected app_id in event payload, got %s", resp.Body.String())
+	}
+}
+
+func TestAPIEventStreamEmitsAdapterLifecycle(t *testing.T) {
+	t.Parallel()
+
+	store, err := control.OpenSQLiteStore(t.TempDir() + "/controlplane.db")
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	bus := eventing.NewBus(store)
+	server := NewServer(primitive.NewRegistry(), nil, nil)
+	server.AttachEventing(bus, store)
+	server.RegisterAppRegistry(control.NewSQLiteAppRegistry(store, bus))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream", nil).WithContext(ctx)
+	resp := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.Handler().ServeHTTP(resp, req)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if err := server.appRegistry.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "kv-app",
+		Name:         "kv.get",
+		Description:  "Fetch a key.",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/kv.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	}); err != nil {
+		t.Fatalf("register adapter: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	payload := resp.Body.String()
+	if !strings.Contains(payload, "event: adapter.registered") {
+		t.Fatalf("expected adapter.registered SSE event, got %s", payload)
+	}
+	if !strings.Contains(payload, `"app_id":"kv-app"`) {
+		t.Fatalf("expected app_id in SSE payload, got %s", payload)
 	}
 }
 
@@ -259,12 +365,12 @@ func TestAPIAppPrimitivesProxyListsSandboxManifests(t *testing.T) {
 		respBody, _ := json.Marshal(appPrimitiveListResponse{
 			AppPrimitives: []primitive.AppPrimitiveManifest{
 				{
-					AppID:       "notes",
-					Name:        "notes.create",
-					Description: "Create a note",
-					InputSchema: json.RawMessage(`{"type":"object"}`),
+					AppID:        "notes",
+					Name:         "notes.create",
+					Description:  "Create a note",
+					InputSchema:  json.RawMessage(`{"type":"object"}`),
 					OutputSchema: json.RawMessage(`{"type":"object"}`),
-					SocketPath:  "/tmp/notes.sock",
+					SocketPath:   "/tmp/notes.sock",
 				},
 			},
 		})

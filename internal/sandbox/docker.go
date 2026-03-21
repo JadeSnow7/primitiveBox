@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -434,7 +435,9 @@ func (d *DockerDriver) inspectSandbox(ctx context.Context, cli *client.Client, s
 
 	if bindings, ok := inspect.NetworkSettings.Ports[nat.Port(containerRPCPort)]; ok && len(bindings) > 0 {
 		sb.RPCEndpoint = fmt.Sprintf("http://127.0.0.1:%s", bindings[0].HostPort)
-		fmt.Sscanf(bindings[0].HostPort, "%d", &sb.RPCPort)
+		if rpcPort, err := strconv.Atoi(bindings[0].HostPort); err == nil {
+			sb.RPCPort = rpcPort
+		}
 	}
 	if inspect.State != nil {
 		switch {

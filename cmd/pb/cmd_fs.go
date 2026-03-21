@@ -42,7 +42,9 @@ func newFSCmd() *cobra.Command {
 			var result struct {
 				Content string `json:"content"`
 			}
-			json.Unmarshal(resp.Result, &result)
+			if err := json.Unmarshal(resp.Result, &result); err != nil {
+				return fmt.Errorf("decode fs.read response: %w", err)
+			}
 			fmt.Print(result.Content)
 			return nil
 		},

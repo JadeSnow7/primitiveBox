@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"primitivebox/internal/cvr"
 	"primitivebox/internal/primitive"
 )
 
@@ -40,6 +41,63 @@ func TestHandleRPCRecoversFromPrimitivePanic(t *testing.T) {
 	server.handleHealth(healthResp, healthReq)
 	if healthResp.Code != http.StatusOK {
 		t.Fatalf("expected health endpoint to remain available, got %d", healthResp.Code)
+	}
+}
+
+func TestListPrimitivesIncludesAppAvailability(t *testing.T) {
+	t.Parallel()
+
+	registry := primitive.NewRegistry()
+	registry.RegisterDefaults(t.TempDir(), primitive.DefaultOptions())
+
+	appRegistry := primitive.NewInMemoryAppRegistry()
+	if err := appRegistry.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "kv-app",
+		Name:         "kv.get",
+		Description:  "Fetch a key.",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/kv.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	}); err != nil {
+		t.Fatalf("register app primitive: %v", err)
+	}
+	if err := appRegistry.MarkUnavailable(context.Background(), "kv-app"); err != nil {
+		t.Fatalf("mark app unavailable: %v", err)
+	}
+
+	server := NewServer(registry, nil, nil)
+	server.RegisterAppRegistry(appRegistry)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/primitives", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	var resp struct {
+		Primitives []map[string]any `json:"primitives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode primitives response: %v", err)
+	}
+	if len(resp.Primitives) == 0 {
+		t.Fatal("expected primitives in response")
+	}
+	found := false
+	for _, item := range resp.Primitives {
+		if item["name"] != "kv.get" {
+			continue
+		}
+		found = true
+		if item["status"] != string(primitive.AppPrimitiveUnavailable) {
+			t.Fatalf("expected unavailable status, got %#v", item)
+		}
+	}
+	if !found {
+		t.Fatalf("expected kv.get in primitive list, got %#v", resp.Primitives)
 	}
 }
 

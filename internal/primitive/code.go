@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -167,8 +168,10 @@ func parseGrepOutput(output, baseDir string) []codeSearchMatch {
 			file = strings.TrimPrefix(file, baseDir+"/")
 		}
 
-		lineNum := 0
-		fmt.Sscanf(parts[1], "%d", &lineNum)
+		lineNum, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
 
 		matches = append(matches, codeSearchMatch{
 			File:    file,
@@ -220,7 +223,7 @@ type codeSymbolsParams struct {
 // Symbol represents a detected code declaration.
 type Symbol struct {
 	Name      string `json:"name"`
-	Kind      string `json:"kind"`      // "function", "class", "method", "trait", "interface"
+	Kind      string `json:"kind"` // "function", "class", "method", "trait", "interface"
 	StartLine int    `json:"start_line"`
 	Signature string `json:"signature,omitempty"`
 }

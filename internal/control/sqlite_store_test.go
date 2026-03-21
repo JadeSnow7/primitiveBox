@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"primitivebox/internal/cvr"
 	"primitivebox/internal/eventing"
+	"primitivebox/internal/primitive"
 	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
 )
@@ -144,5 +146,81 @@ func TestSQLiteStoreImportsLegacyRegistry(t *testing.T) {
 	}
 	if imported != 1 {
 		t.Fatalf("expected 1 imported sandbox, got %d", imported)
+	}
+}
+
+func TestSQLiteAppRegistry_PersistsAvailabilityAndLifecycleEvents(t *testing.T) {
+	t.Parallel()
+
+	store, err := OpenSQLiteStore(t.TempDir() + "/controlplane.db")
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	bus := eventing.NewBus(store)
+	registry := NewSQLiteAppRegistry(store, bus)
+
+	manifest := primitive.AppPrimitiveManifest{
+		AppID:        "kv-app",
+		Name:         "kv.get",
+		Description:  "Fetch a key.",
+		InputSchema:  json.RawMessage(`{"type":"object","properties":{"key":{"type":"string"}}}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}}}`),
+		SocketPath:   "/tmp/kv.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	}
+
+	if err := registry.Register(context.Background(), manifest); err != nil {
+		t.Fatalf("register adapter: %v", err)
+	}
+
+	got, err := registry.Get(context.Background(), manifest.Name)
+	if err != nil {
+		t.Fatalf("get adapter manifest: %v", err)
+	}
+	if got == nil || got.Availability != primitive.AppPrimitiveActive {
+		t.Fatalf("expected active manifest after registration, got %+v", got)
+	}
+
+	if err := registry.MarkUnavailable(context.Background(), manifest.AppID); err != nil {
+		t.Fatalf("mark unavailable: %v", err)
+	}
+
+	got, err = registry.Get(context.Background(), manifest.Name)
+	if err != nil {
+		t.Fatalf("get unavailable adapter manifest: %v", err)
+	}
+	if got == nil || got.Availability != primitive.AppPrimitiveUnavailable {
+		t.Fatalf("expected unavailable manifest after mark unavailable, got %+v", got)
+	}
+
+	reactivated := manifest
+	reactivated.SocketPath = "/tmp/kv-v2.sock"
+	if err := registry.Register(context.Background(), reactivated); err != nil {
+		t.Fatalf("reactivate adapter: %v", err)
+	}
+
+	got, err = registry.Get(context.Background(), manifest.Name)
+	if err != nil {
+		t.Fatalf("get reactivated adapter manifest: %v", err)
+	}
+	if got == nil || got.Availability != primitive.AppPrimitiveActive || got.SocketPath != reactivated.SocketPath {
+		t.Fatalf("expected active reactivated manifest, got %+v", got)
+	}
+
+	events, err := store.ListEvents(context.Background(), eventing.ListFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list adapter lifecycle events: %v", err)
+	}
+	if len(events) < 3 {
+		t.Fatalf("expected at least 3 lifecycle events, got %+v", events)
+	}
+	if events[2].Type != "adapter.registered" || events[1].Type != "adapter.unavailable" || events[0].Type != "adapter.reactivated" {
+		t.Fatalf("unexpected lifecycle event order: %+v", events[:3])
 	}
 }

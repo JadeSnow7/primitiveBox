@@ -43,11 +43,18 @@ make build          # Build CLI binary to bin/pb
 make run            # Build and run server on current workspace
 make test           # Run Go tests: go test ./... -v
 make sdk-test       # Run Python SDK tests: python3 -m pytest sdk/python/tests -q
+make lint           # Run pinned golangci-lint with repo-managed cache dirs
 make sandbox-image  # Build Docker sandbox image (requires local Docker daemon)
 make demo           # Run the sandbox demo script
 make fmt            # Format Go code: go fmt ./...
 make clean          # Remove bin/ and .primitivebox/
 ```
+
+Notes:
+
+- `make build`, `make test`, and `make fmt` use a repo-managed `GOCACHE` path for better behavior in restricted environments.
+- `make lint` reads the pinned linter version from `.golangci-version` and configures writable cache directories automatically.
+- Some socket/listener-based tests may skip in highly restricted local sandboxes if the environment disallows `bind`; they should still run in normal developer environments and CI.
 
 Run a single Go test:
 

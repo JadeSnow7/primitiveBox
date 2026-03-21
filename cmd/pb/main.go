@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	pbui "primitivebox/cmd/pb-ui"
 	"primitivebox/internal/audit"
 	"primitivebox/internal/config"
 	"primitivebox/internal/control"
@@ -19,7 +20,6 @@ import (
 	"primitivebox/internal/primitive"
 	"primitivebox/internal/rpc"
 	"primitivebox/internal/sandbox"
-	pbui "primitivebox/cmd/pb-ui"
 
 	"github.com/spf13/cobra"
 )
@@ -151,6 +151,7 @@ func runServer(host string, port int, workspaceDir string, sandboxMode, serveUI 
 	}
 
 	server := rpc.NewServer(registry, auditor, manager)
+	server.RegisterAppRegistry(control.NewSQLiteAppRegistry(store, bus))
 	server.AttachEventing(bus, store)
 	server.SetAllowedOrigins([]string{"http://localhost:5173"})
 	if serveUI {

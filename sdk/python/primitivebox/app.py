@@ -38,6 +38,13 @@ class AppServer:
         reversible: bool = True,
         risk_level: str = "low",
         category: str = "mutation",
+        verify_strategy: Optional[str] = None,
+        verify_primitive: Optional[str] = None,
+        verify_command: Optional[str] = None,
+        verify_endpoint: Optional[str] = None,
+        rollback_strategy: Optional[str] = None,
+        rollback_primitive: Optional[str] = None,
+        rollback_endpoint: Optional[str] = None,
     ):
         """Register a function as an app primitive."""
 
@@ -58,6 +65,24 @@ class AppServer:
                     "affected_scopes": [],
                 },
             }
+            if verify_endpoint:
+                manifest["verify_endpoint"] = verify_endpoint
+            if verify_strategy:
+                manifest["verify"] = {
+                    "strategy": verify_strategy,
+                }
+                if verify_primitive:
+                    manifest["verify"]["primitive"] = verify_primitive
+                if verify_command:
+                    manifest["verify"]["command"] = verify_command
+            if rollback_endpoint:
+                manifest["rollback_endpoint"] = rollback_endpoint
+            if rollback_strategy:
+                manifest["rollback"] = {
+                    "strategy": rollback_strategy,
+                }
+                if rollback_primitive:
+                    manifest["rollback"]["primitive"] = rollback_primitive
             self._client.call("app.register", manifest, headers={"X-PB-Origin": "sandbox"})
 
             @functools.wraps(fn)

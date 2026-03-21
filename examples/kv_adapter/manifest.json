@@ -8,6 +8,13 @@
       "properties": {
         "key": { "type": "string" },
         "default": { "type": "string" },
+        "verify_control": {
+          "type": "object",
+          "properties": {
+            "force_fail": { "type": "boolean" },
+            "message": { "type": "string" }
+          }
+        },
         "test_control": {
           "type": "object",
           "properties": {
@@ -80,6 +87,13 @@
             "version": { "type": "integer" }
           }
         },
+        "verify_control": {
+          "type": "object",
+          "properties": {
+            "force_fail": { "type": "boolean" },
+            "message": { "type": "string" }
+          }
+        },
         "test_control": {
           "type": "object",
           "properties": {
@@ -98,6 +112,21 @@
         "key": { "type": "string" },
         "previous_exists": { "type": "boolean" },
         "previous_value": { "type": "string" },
+        "previous_metadata": {
+          "type": "object",
+          "properties": {
+            "content_type": { "type": "string" },
+            "labels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "tags": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "version": { "type": "integer" }
+          }
+        },
         "size_bytes": { "type": "integer" },
         "value_sha256": { "type": "string" },
         "updated_at": { "type": "string" }
@@ -105,8 +134,16 @@
       "required": ["stored", "key", "previous_exists"]
     },
     "socket_path": "/tmp/pb-kv.sock",
+<<<<<<< HEAD
     "verify_endpoint": "kv.verify",
     "rollback_endpoint": "state.restore",
+=======
+    "verify_endpoint": "kv.get",
+    "rollback": {
+      "strategy": "primitive",
+      "primitive": "kv.rollback_set"
+    },
+>>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
     "intent": {
       "category": "mutation",
       "reversible": true,
@@ -470,6 +507,71 @@
       "category": "query",
       "reversible": true,
       "risk_level": "low",
+      "affected_scopes": ["app:kv"]
+    }
+  },
+  {
+    "app_id": "pb-kv-adapter",
+    "name": "kv.rollback_set",
+    "description": "Restore adapter state after kv.set using the runtime-provided rollback payload.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "primitive": { "type": "string" },
+        "checkpoint_id": { "type": "string" },
+        "params": {
+          "type": "object",
+          "properties": {
+            "key": { "type": "string" }
+          },
+          "required": ["key"]
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "previous_exists": { "type": "boolean" },
+            "previous_value": { "type": "string" },
+            "previous_metadata": {
+              "type": "object",
+              "properties": {
+                "content_type": { "type": "string" },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                },
+                "tags": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "version": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "verify": {
+          "type": "object",
+          "properties": {
+            "outcome": { "type": "string" },
+            "message": { "type": "string" }
+          }
+        }
+      },
+      "required": ["primitive", "params"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "rolled_back": { "type": "boolean" },
+        "key": { "type": "string" },
+        "action": { "type": "string" }
+      },
+      "required": ["rolled_back", "key", "action"]
+    },
+    "socket_path": "/tmp/pb-kv.sock",
+    "intent": {
+      "category": "rollback",
+      "reversible": true,
+      "risk_level": "medium",
       "affected_scopes": ["app:kv"]
     }
   }

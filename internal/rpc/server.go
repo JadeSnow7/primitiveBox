@@ -16,7 +16,6 @@ import (
 	pathpkg "path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"primitivebox/internal/audit"
@@ -72,7 +71,6 @@ type Server struct {
 	server     *http.Server
 	httpClient *http.Client
 	uiFS       fs.FS
-	mu         sync.Mutex
 }
 
 // NewServer creates a new JSON-RPC server bound to the given primitive registry.
@@ -418,7 +416,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListPrimitives(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"primitives": s.registry.Schemas(),
+		"primitives": s.listPrimitiveSchemas(r.Context()),
 	})
 }
 
@@ -713,6 +711,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "sandboxes":
 		s.handleAPISandboxes(w, r)
+	case path == "primitives":
+		s.handleListPrimitives(w, r)
 	case path == "events":
 		s.handleAPIEvents(w, r)
 	case path == "events/stream":
@@ -730,6 +730,44 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAPISandboxDetail(w, r, strings.TrimPrefix(path, "sandboxes/"))
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) listPrimitiveSchemas(ctx context.Context) []primitive.Schema {
+	schemas := make([]primitive.Schema, 0)
+	if s.registry != nil {
+		schemas = append(schemas, s.registry.Schemas()...)
+	}
+	if s.appRegistry == nil {
+		return schemas
+	}
+	items, err := s.appRegistry.List(ctx)
+	if err != nil {
+		return schemas
+	}
+	for _, manifest := range items {
+		schemas = append(schemas, appManifestSchema(manifest))
+	}
+	return schemas
+}
+
+func appManifestSchema(manifest primitive.AppPrimitiveManifest) primitive.Schema {
+	namespace := manifest.Name
+	if idx := strings.IndexByte(manifest.Name, '.'); idx > 0 {
+		namespace = manifest.Name[:idx]
+	}
+	return primitive.Schema{
+		Name:         manifest.Name,
+		Namespace:    namespace,
+		Description:  manifest.Description,
+		Input:        manifest.InputSchema,
+		Output:       manifest.OutputSchema,
+		InputSchema:  manifest.InputSchema,
+		OutputSchema: manifest.OutputSchema,
+		SideEffect:   string(manifest.Intent.Category),
+		Source:       "app",
+		Adapter:      manifest.AppID,
+		Status:       string(manifest.Availability),
 	}
 }
 
@@ -1099,29 +1137,14 @@ func isSandboxRequest(r *http.Request) bool {
 }
 
 func normalizeManifestSchema(raw json.RawMessage) (json.RawMessage, error) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return json.RawMessage("{}"), nil
-	}
-	if trimmed[0] == '"' {
-		var encoded string
-		if err := json.Unmarshal(trimmed, &encoded); err != nil {
-			return nil, err
-		}
-		trimmed = []byte(encoded)
-	}
-	if len(trimmed) == 0 {
-		return json.RawMessage("{}"), nil
-	}
-	if !json.Valid(trimmed) {
-		return nil, fmt.Errorf("must be valid JSON")
-	}
-	return append(json.RawMessage(nil), trimmed...), nil
+	return primitive.NormalizeAppManifestSchema(raw)
 }
 
 func (s *Server) writePrimitiveError(w http.ResponseWriter, id any, err error) {
 	errCode := CodeInternalError
+	var errData any
 	if pe, ok := err.(*primitive.PrimitiveError); ok {
+		errData = pe.Details
 		switch pe.Code {
 		case primitive.ErrNotFound, primitive.ErrPermission, primitive.ErrValidation:
 			errCode = CodeInvalidParams
@@ -1131,7 +1154,7 @@ func (s *Server) writePrimitiveError(w http.ResponseWriter, id any, err error) {
 	}
 	s.writeResponse(w, Response{
 		JSONRPC: "2.0",
-		Error:   &Error{Code: errCode, Message: err.Error()},
+		Error:   &Error{Code: errCode, Message: err.Error(), Data: errData},
 		ID:      id,
 	})
 }

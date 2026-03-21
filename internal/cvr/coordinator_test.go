@@ -12,7 +12,7 @@ func TestCVRCoordinator_IrreversibleMutation(t *testing.T) {
 
 	store := &mockManifestStore{}
 	exec := &mockStrategyExecutor{
-		result: ExecuteResult{Success: false, ErrMsg: "write failed"},
+		result:       ExecuteResult{Success: false, ErrMsg: "write failed"},
 		checkpointID: "real-checkpoint-id",
 	}
 	coordinator := NewCVRCoordinator(store, nil, NewDefaultDecisionTree())
@@ -155,6 +155,35 @@ func TestDecisionTree_Priority(t *testing.T) {
 	}
 }
 
+func TestCVRCoordinator_DoesNotRunVerifyStrategyWhenExecutionFails(t *testing.T) {
+	t.Parallel()
+
+	exec := &mockStrategyExecutor{
+		result: ExecuteResult{Success: false, ErrMsg: "write failed"},
+	}
+	verify := &countingVerifyStrategy{}
+	coordinator := NewCVRCoordinator(&mockManifestStore{}, verify, NewDefaultDecisionTree())
+
+	result, err := coordinator.Execute(context.Background(), CVRRequest{
+		PrimitiveID: "myapp.mutate",
+		Intent: PrimitiveIntent{
+			Category:   IntentMutation,
+			Reversible: true,
+			RiskLevel:  RiskMedium,
+		},
+		Exec: exec,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if verify.calls != 0 {
+		t.Fatalf("expected verify strategy to be skipped, got %d calls", verify.calls)
+	}
+	if result.StrategyResult.Outcome != VerifyOutcomeFailed {
+		t.Fatalf("expected execution failure outcome to be preserved, got %s", result.StrategyResult.Outcome)
+	}
+}
+
 type mockManifestStore struct {
 	saveErr   error
 	manifests map[string]CheckpointManifest
@@ -203,6 +232,21 @@ type mockStrategyExecutor struct {
 	result       ExecuteResult
 	err          error
 	checkpointID string
+}
+
+type countingVerifyStrategy struct {
+	calls int
+}
+
+func (s *countingVerifyStrategy) Name() string        { return "counting" }
+func (s *countingVerifyStrategy) Description() string { return "counting" }
+func (s *countingVerifyStrategy) Run(ctx context.Context, exec StrategyExecutor, result ExecuteResult, manifest *CheckpointManifest) (StrategyResult, error) {
+	_ = ctx
+	_ = exec
+	_ = result
+	_ = manifest
+	s.calls++
+	return StrategyResult{Outcome: VerifyOutcomePassed}, nil
 }
 
 func (m *mockStrategyExecutor) Execute(ctx context.Context, method string, params any) (ExecuteResult, error) {

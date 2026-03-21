@@ -60,6 +60,9 @@ func (r *Router) Route(ctx context.Context, method string, params json.RawMessag
 	if manifest == nil {
 		return primitive.Result{}, ErrPrimitiveNotFound
 	}
+	if manifest.Availability == primitive.AppPrimitiveUnavailable {
+		return primitive.Result{}, appPrimitiveUnavailableError(*manifest, method, "")
+	}
 
 	return r.routeAppPrimitive(ctx, *manifest, method, params)
 }
@@ -110,7 +113,10 @@ func (r *Router) callAppSocket(ctx context.Context, socketPath, method string, p
 	dialer := &net.Dialer{}
 	conn, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
-		return primitive.Result{}, err
+		if appRegistry := r.currentAppRegistry(); appRegistry != nil {
+			_ = appRegistry.MarkUnavailable(ctx, manifest.AppID)
+		}
+		return primitive.Result{}, appPrimitiveUnavailableError(manifest, method, err.Error())
 	}
 	defer conn.Close()
 
@@ -162,6 +168,23 @@ func appResultPassed(data any) bool {
 		return true
 	}
 	return passed
+}
+
+func appPrimitiveUnavailableError(manifest primitive.AppPrimitiveManifest, method, cause string) error {
+	details := map[string]any{
+		"app_id":      manifest.AppID,
+		"primitive":   method,
+		"socket_path": manifest.SocketPath,
+		"status":      primitive.AppPrimitiveUnavailable,
+	}
+	if cause != "" {
+		details["cause"] = cause
+	}
+	return &primitive.PrimitiveError{
+		Code:    primitive.ErrExecution,
+		Message: fmt.Sprintf("adapter %s is unavailable", manifest.AppID),
+		Details: details,
+	}
 }
 
 type appRPCRequest struct {

@@ -106,6 +106,8 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 		step.Status = StepRunning
 		step.StartedAt = time.Now()
 		intent := e.inferPrimitiveIntent(ctx, step.Primitive)
+		appManifest := e.lookupAppManifest(ctx, step.Primitive)
+		verifyStrategy, disableDefaultVerify := e.resolveVerifyStrategy(ctx, step.Primitive, step.Input)
 		intentJSON, _ := json.Marshal(intent)
 		traceRecord := runtrace.StepRecord{
 			TaskID:         task.ID,
@@ -118,22 +120,27 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 			IntentSnapshot: string(intentJSON),
 			Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
 		}
-		execAdapter := &cvrExecutorAdapter{executor: e.executor, intent: &intent}
+		execAdapter := &cvrExecutorAdapter{executor: e.executor, intent: &intent, rootMethod: step.Primitive}
 		coordinator := cvr.NewCVRCoordinator(e.checkpointManifestStore(), e.cvrStrategy, e.cvrDecisionTree())
 		cvrResult, err := coordinator.Execute(ctx, cvr.CVRRequest{
-			PrimitiveID: step.Primitive,
-			SandboxID:   task.SandboxID,
-			Intent:      intent,
-			Params:      step.Input,
-			Exec:        execAdapter,
-			TraceID:     traceRecord.TraceID,
-			StepID:      step.ID,
-			Attempt:     attempt,
-			CVRDepth:    0,
+			PrimitiveID:           step.Primitive,
+			SandboxID:             task.SandboxID,
+			Intent:                intent,
+			Params:                step.Input,
+			Exec:                  execAdapter,
+			TraceID:               traceRecord.TraceID,
+			StepID:                step.ID,
+			Attempt:               attempt,
+			CVRDepth:              0,
+			VerifyStrategy:        verifyStrategy,
+			DisableVerifyStrategy: disableDefaultVerify,
 		})
 		duration := time.Since(step.StartedAt)
 		step.Duration = duration
-		result := execAdapter.lastResult
+		result := execAdapter.mainResult
+		if result == nil {
+			result = execAdapter.lastResult
+		}
 		traceRecord.DurationMs = duration.Milliseconds()
 		traceRecord.CheckpointID = cvrResult.CheckpointID
 		traceRecord.LayerAOutcome = cvrResult.LayerAOutcome
@@ -141,7 +148,9 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 		traceRecord.StrategyOutcome = string(cvrResult.StrategyResult.Outcome)
 		traceRecord.VerifyResult = string(cvrResult.StrategyResult.Outcome)
 		traceRecord.AffectedScopes = append([]string(nil), intent.AffectedScopes...)
-		if e.cvrStrategy != nil {
+		if verifyStrategy != nil {
+			traceRecord.StrategyName = verifyStrategy.Name()
+		} else if e.cvrStrategy != nil && !disableDefaultVerify {
 			traceRecord.StrategyName = e.cvrStrategy.Name()
 		}
 		if errors.Is(err, cvr.ErrCVRDepthExceeded) {
@@ -169,6 +178,9 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 		if lastErr == nil && result != nil && result.Error != nil {
 			lastErr = errors.New(result.Error.Message)
 		}
+		if lastErr == nil && cvrResult.StrategyResult.Message != "" {
+			lastErr = errors.New(cvrResult.StrategyResult.Message)
+		}
 		if lastErr == nil {
 			lastErr = errors.New("cvr execution failed")
 		}
@@ -180,8 +192,13 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 		}
 
 		// Apply recovery strategy from CVR first, falling back to legacy retry policy.
-		action := ActionRetry
-		switch cvrResult.AppliedAction {
+		recoveryAction := cvrResult.AppliedAction
+		if shouldPreferDeclaredRollback(appManifest, cvrResult) {
+			recoveryAction = cvr.RecoveryActionRollback
+		}
+
+		var action RecoveryAction
+		switch recoveryAction {
 		case cvr.RecoveryActionRetry:
 			if attempt >= maxRetries {
 				action = e.recovery.Decide(failureKind, attempt, maxRetries)
@@ -189,21 +206,13 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 				action = ActionRetry
 			}
 		case cvr.RecoveryActionRollback:
-			// Attempt a real state restore using the checkpoint created before this step.
-			if cvrResult.CheckpointID == "" {
-				lastErr = fmt.Errorf("rollback requested but no checkpoint_id available for %s", step.Primitive)
+			recoveryErr := e.executeDeclaredRollback(ctx, step, step.Input, result, cvrResult, appManifest)
+			if recoveryErr != nil {
+				lastErr = recoveryErr
 				action = ActionFail
 			} else {
-				restoreParams, _ := json.Marshal(map[string]string{"checkpoint_id": cvrResult.CheckpointID})
-				_, restoreErr := e.executor.Execute(ctx, "state.restore", restoreParams)
-				if restoreErr != nil {
-					lastErr = fmt.Errorf("rollback failed for checkpoint %s: %w", cvrResult.CheckpointID, restoreErr)
-					action = ActionFail
-				} else {
-					log.Printf("[Engine] Rolled back to checkpoint %s for step %s", cvrResult.CheckpointID, step.Primitive)
-					step.Status = StepRolledBack
-					action = ActionPause
-				}
+				step.Status = StepRolledBack
+				action = ActionPause
 			}
 		case cvr.RecoveryActionEscalate, cvr.RecoveryActionRewrite:
 			// Surface to caller for human or AI re-planning; stop retrying.
@@ -243,6 +252,181 @@ func (e *Engine) executeStepWithRecovery(ctx context.Context, task *Task, step *
 	return nil, fmt.Errorf("step %s failed after %d attempts: %v", step.Primitive, maxRetries, lastErr)
 }
 
+func (e *Engine) resolveVerifyStrategy(ctx context.Context, primitiveID string, params json.RawMessage) (cvr.VerifyStrategy, bool) {
+	manifest := e.lookupAppManifest(ctx, primitiveID)
+	if manifest == nil || manifest.Verify == nil {
+		return nil, false
+	}
+
+	switch manifest.Verify.Strategy {
+	case "none":
+		return nil, true
+	case "primitive", "command":
+		return newAppDeclaredVerifyStrategy(primitiveID, *manifest.Verify, params), true
+	default:
+		return nil, false
+	}
+}
+
+func (e *Engine) lookupAppManifest(ctx context.Context, primitiveID string) *primitive.AppPrimitiveManifest {
+	if e.appRegistry == nil {
+		return nil
+	}
+
+	manifest, err := e.appRegistry.Get(ctx, primitiveID)
+	if err != nil {
+		return nil
+	}
+	return manifest
+}
+
+func (e *Engine) executeDeclaredRollback(
+	ctx context.Context,
+	step *Step,
+	originalParams json.RawMessage,
+	execResult *StepResult,
+	cvrResult cvr.CVRResult,
+	manifest *primitive.AppPrimitiveManifest,
+) error {
+	if manifest != nil && shouldFailClosedWithoutRollback(*manifest) {
+		return fmt.Errorf(
+			"app rollback required for %s: primitive mutates app-owned state and has no rollback declaration; state.restore alone does not recover app state",
+			step.Primitive,
+		)
+	}
+
+	if manifest != nil && manifest.Rollback != nil {
+		if err := e.executeAppRollback(ctx, step, originalParams, execResult, cvrResult, *manifest); err != nil {
+			return err
+		}
+		if manifest.Rollback.Strategy == "primitive" && manifest.Rollback.Primitive == "state.restore" {
+			return nil
+		}
+	}
+
+	if cvrResult.CheckpointID == "" {
+		if manifest != nil && manifest.Rollback != nil {
+			return nil
+		}
+		return fmt.Errorf("rollback requested but no checkpoint_id available for %s", step.Primitive)
+	}
+
+	if err := e.executeWorkspaceRestore(ctx, cvrResult.CheckpointID, step.Primitive); err != nil {
+		return err
+	}
+	return nil
+}
+
+func shouldFailClosedWithoutRollback(manifest primitive.AppPrimitiveManifest) bool {
+	if manifest.Rollback != nil {
+		return false
+	}
+	if manifest.Intent.Category != cvr.IntentMutation {
+		return false
+	}
+	return !manifest.Intent.Reversible || manifest.Intent.RiskLevel == cvr.RiskHigh
+}
+
+func shouldPreferDeclaredRollback(manifest *primitive.AppPrimitiveManifest, result cvr.CVRResult) bool {
+	if manifest == nil || manifest.Rollback == nil {
+		return false
+	}
+	if manifest.Intent.Category != cvr.IntentMutation {
+		return false
+	}
+	switch result.StrategyResult.Outcome {
+	case cvr.VerifyOutcomeFailed, cvr.VerifyOutcomeError, cvr.VerifyOutcomeTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) executeAppRollback(
+	ctx context.Context,
+	step *Step,
+	originalParams json.RawMessage,
+	execResult *StepResult,
+	cvrResult cvr.CVRResult,
+	manifest primitive.AppPrimitiveManifest,
+) error {
+	if manifest.Rollback == nil || manifest.Rollback.Strategy != "primitive" {
+		return nil
+	}
+
+	method := manifest.Rollback.Primitive
+	if method == "" {
+		return fmt.Errorf("rollback declaration for %s resolved to an empty primitive", step.Primitive)
+	}
+	if method == "state.restore" {
+		return e.executeWorkspaceRestore(ctx, cvrResult.CheckpointID, step.Primitive)
+	}
+
+	params, err := buildAppRollbackParams(step.Primitive, originalParams, execResult, cvrResult)
+	if err != nil {
+		return fmt.Errorf("rollback payload for %s: %w", step.Primitive, err)
+	}
+	if _, err := e.executor.Execute(ctx, method, params); err != nil {
+		return fmt.Errorf("app rollback failed for %s via %s: %w", step.Primitive, method, err)
+	}
+	log.Printf("[Engine] Rolled back app state for step %s via %s", step.Primitive, method)
+	return nil
+}
+
+func (e *Engine) executeWorkspaceRestore(ctx context.Context, checkpointID, primitive string) error {
+	if checkpointID == "" {
+		return fmt.Errorf("rollback requested but no checkpoint_id available for %s", primitive)
+	}
+	restoreParams, err := json.Marshal(map[string]string{"checkpoint_id": checkpointID})
+	if err != nil {
+		return fmt.Errorf("encode state.restore params: %w", err)
+	}
+	if _, restoreErr := e.executor.Execute(ctx, "state.restore", restoreParams); restoreErr != nil {
+		return fmt.Errorf("rollback failed for checkpoint %s: %w", checkpointID, restoreErr)
+	}
+	log.Printf("[Engine] Rolled back workspace to checkpoint %s for step %s", checkpointID, primitive)
+	return nil
+}
+
+func buildAppRollbackParams(
+	primitiveID string,
+	originalParams json.RawMessage,
+	execResult *StepResult,
+	cvrResult cvr.CVRResult,
+) (json.RawMessage, error) {
+	var original map[string]any
+	if len(originalParams) > 0 {
+		if err := json.Unmarshal(originalParams, &original); err != nil {
+			return nil, fmt.Errorf("decode original params: %w", err)
+		}
+	}
+
+	var resultData any
+	if execResult != nil && len(execResult.Data) > 0 {
+		if err := json.Unmarshal(execResult.Data, &resultData); err != nil {
+			return nil, fmt.Errorf("decode execution result: %w", err)
+		}
+	}
+
+	payload := map[string]any{
+		"primitive":       primitiveID,
+		"checkpoint_id":   cvrResult.CheckpointID,
+		"params":          original,
+		"execution_error": cvrResult.StrategyResult.Message,
+	}
+	if resultData != nil {
+		payload["result"] = resultData
+	}
+	if cvrResult.StrategyResult.Outcome != "" {
+		payload["verify"] = map[string]any{
+			"outcome":      cvrResult.StrategyResult.Outcome,
+			"message":      cvrResult.StrategyResult.Message,
+			"recover_hint": cvrResult.StrategyResult.RecoverHint,
+		}
+	}
+	return json.Marshal(payload)
+}
+
 // CreateTask builds a new task from a description and step definitions.
 func (e *Engine) CreateTask(description string, sandboxID string, steps []StepDef) *Task {
 	task := &Task{
@@ -277,6 +461,8 @@ type StepDef struct {
 type cvrExecutorAdapter struct {
 	executor   PrimitiveExecutor
 	intent     *cvr.PrimitiveIntent
+	rootMethod string
+	mainResult *StepResult
 	lastResult *StepResult
 }
 
@@ -299,6 +485,9 @@ func (a *cvrExecutorAdapter) Execute(ctx context.Context, method string, params 
 	}
 	result, err := a.executor.Execute(ctx, method, rawParams)
 	a.lastResult = result
+	if method == a.rootMethod {
+		a.mainResult = result
+	}
 	if result == nil {
 		return cvr.ExecuteResult{Success: err == nil}, err
 	}

@@ -78,9 +78,12 @@ func (l *Logger) LogCallWithMetadata(method string, input json.RawMessage, outpu
 
 	// Write to file if available
 	if l.logFile != nil {
-		data, _ := json.Marshal(entry)
-		l.logFile.Write(data)
-		l.logFile.Write([]byte("\n"))
+		data, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			log.Printf("[Audit] Failed to marshal audit entry: %v", marshalErr)
+		} else if _, writeErr := l.logFile.Write(append(data, '\n')); writeErr != nil {
+			log.Printf("[Audit] Failed to write audit entry: %v", writeErr)
+		}
 	}
 	l.mu.Unlock()
 }

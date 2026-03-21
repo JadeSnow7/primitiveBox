@@ -610,16 +610,7 @@ func generateID() string {
 type SnapshotManager struct {
 	SandboxID    string
 	WorkspaceDir string
-	mu           sync.Mutex
-	snapshots    []SnapshotEntry
 	maxSnapshots int
-}
-
-// SnapshotEntry records metadata about a single snapshot.
-type SnapshotEntry struct {
-	ID        string    `json:"id"`
-	Label     string    `json:"label"`
-	CreatedAt time.Time `json:"created_at"`
 }
 
 // NewSnapshotManager creates a snapshot manager for a sandbox workspace.

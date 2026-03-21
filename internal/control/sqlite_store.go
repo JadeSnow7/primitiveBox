@@ -126,6 +126,23 @@ func (s *SQLiteStore) init() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cp_sandbox ON checkpoint_manifests(sandbox_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_cp_trace ON checkpoint_manifests(trace_id)`,
+		`CREATE TABLE IF NOT EXISTS app_primitives (
+			name TEXT PRIMARY KEY,
+			app_id TEXT NOT NULL,
+			description TEXT,
+			input_schema_json TEXT NOT NULL,
+			output_schema_json TEXT NOT NULL,
+			socket_path TEXT NOT NULL,
+			availability TEXT NOT NULL,
+			verify_endpoint TEXT,
+			verify_json TEXT,
+			rollback_endpoint TEXT,
+			rollback_json TEXT,
+			intent_json TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_primitives_app_id ON app_primitives (app_id, name ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_primitives_availability ON app_primitives (availability, name ASC)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -144,6 +161,14 @@ func (s *SQLiteStore) init() error {
 	for _, stmt := range traceStepMigrations {
 		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("migrate trace_steps schema: %w", err)
+		}
+	}
+	appPrimitiveMigrations := []string{
+		`ALTER TABLE app_primitives ADD COLUMN availability TEXT NOT NULL DEFAULT 'active'`,
+	}
+	for _, stmt := range appPrimitiveMigrations {
+		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("migrate app_primitives schema: %w", err)
 		}
 	}
 	return nil

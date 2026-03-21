@@ -42,7 +42,9 @@ func newCheckpointCmd() *cobra.Command {
 			var result struct {
 				CheckpointID string `json:"checkpoint_id"`
 			}
-			json.Unmarshal(resp.Result, &result)
+			if err := json.Unmarshal(resp.Result, &result); err != nil {
+				return fmt.Errorf("decode checkpoint response: %w", err)
+			}
 			fmt.Printf("Checkpoint created: %s\n", result.CheckpointID)
 			return nil
 		},

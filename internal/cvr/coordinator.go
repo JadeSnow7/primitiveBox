@@ -18,15 +18,17 @@ type CVRResult struct {
 }
 
 type CVRRequest struct {
-	PrimitiveID string
-	SandboxID   string // populated by caller; written into CheckpointManifest.SandboxID
-	Intent      PrimitiveIntent
-	Params      any
-	Exec        StrategyExecutor
-	TraceID     string
-	StepID      string
-	Attempt     int
-	CVRDepth    int
+	PrimitiveID           string
+	SandboxID             string // populated by caller; written into CheckpointManifest.SandboxID
+	Intent                PrimitiveIntent
+	Params                any
+	Exec                  StrategyExecutor
+	TraceID               string
+	StepID                string
+	Attempt               int
+	CVRDepth              int
+	VerifyStrategy        VerifyStrategy
+	DisableVerifyStrategy bool
 }
 
 type CVRCoordinator struct {
@@ -104,8 +106,15 @@ func (c *CVRCoordinator) Execute(ctx context.Context, req CVRRequest) (CVRResult
 
 	execResult, execErr := req.Exec.Execute(ctx, req.PrimitiveID, req.Params)
 	strategyResult := strategyResultFromExecution(execResult, execErr)
-	if c.strategy != nil {
-		runResult, err := c.strategy.Run(ctx, req.Exec, execResult, &manifest)
+	strategy := c.strategy
+	if req.DisableVerifyStrategy {
+		strategy = nil
+	}
+	if req.VerifyStrategy != nil {
+		strategy = req.VerifyStrategy
+	}
+	if strategy != nil && execErr == nil && execResult.Success {
+		runResult, err := strategy.Run(ctx, req.Exec, execResult, &manifest)
 		if err != nil {
 			runResult = StrategyResult{
 				Outcome:     VerifyOutcomeError,

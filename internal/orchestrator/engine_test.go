@@ -100,9 +100,9 @@ func (f *failingExecutor) ListPrimitives() []string {
 
 // rollbackTrackingExecutor records state.restore calls and fails the main primitive once.
 type rollbackTrackingExecutor struct {
-	checkpointID   string
-	restoreCalls   []string // checkpoint IDs passed to state.restore
-	mainCallCount  int
+	checkpointID  string
+	restoreCalls  []string // checkpoint IDs passed to state.restore
+	mainCallCount int
 }
 
 func (r *rollbackTrackingExecutor) Execute(ctx context.Context, method string, params json.RawMessage) (*StepResult, error) {
@@ -253,3 +253,419 @@ func (s *singleFailExecutor) Execute(_ context.Context, method string, _ json.Ra
 }
 
 func (s *singleFailExecutor) ListPrimitives() []string { return []string{"fs.write"} }
+
+type recordingExecutor struct {
+	calls []string
+}
+
+func (r *recordingExecutor) Execute(_ context.Context, method string, params json.RawMessage) (*StepResult, error) {
+	r.calls = append(r.calls, method)
+
+	switch method {
+	case "myapp.mutate":
+		payload, _ := json.Marshal(map[string]any{"stored": true})
+		return &StepResult{Success: true, Data: payload}, nil
+	case "myapp.verify":
+		payload, _ := json.Marshal(map[string]any{"passed": true})
+		return &StepResult{Success: true, Data: payload}, nil
+	case "verify.command":
+		payload, _ := json.Marshal(map[string]any{"passed": true, "summary": "ok"})
+		return &StepResult{Success: true, Data: payload}, nil
+	default:
+		payload, _ := json.Marshal(map[string]any{"checkpoint_id": "cp-app-verify"})
+		return &StepResult{Success: true, Data: payload}, nil
+	}
+}
+
+func (r *recordingExecutor) ListPrimitives() []string {
+	return []string{"myapp.mutate", "myapp.verify", "verify.command", "state.checkpoint"}
+}
+
+func TestExecuteStepWithRecovery_AppPrimitiveVerifyStrategyPrimitive(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "myapp.verify",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &recordingExecutor{}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+
+	task := &Task{ID: "task-verify", MaxRetries: 0}
+	step := &Step{ID: "step-verify", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"ok"}`)}
+	result, err := engine.executeStepWithRecovery(context.Background(), task, step)
+	if err != nil {
+		t.Fatalf("execute step: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if len(executor.calls) < 2 || executor.calls[1] != "myapp.verify" {
+		t.Fatalf("expected verify primitive to run after main call, got %v", executor.calls)
+	}
+}
+
+func TestExecuteStepWithRecovery_AppPrimitiveVerifyStrategyCommand(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy: "command",
+			Command:  "true",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &recordingExecutor{}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+
+	task := &Task{ID: "task-command-verify", MaxRetries: 0}
+	step := &Step{ID: "step-command-verify", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"ok"}`)}
+	if _, err := engine.executeStepWithRecovery(context.Background(), task, step); err != nil {
+		t.Fatalf("execute step: %v", err)
+	}
+	if len(executor.calls) < 2 || executor.calls[1] != "verify.command" {
+		t.Fatalf("expected verify.command to run after main call, got %v", executor.calls)
+	}
+}
+
+func TestExecuteStepWithRecovery_AppPrimitiveVerifyStrategyNoneSkipsAutomaticVerify(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy: "none",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &recordingExecutor{}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+	engine.cvrStrategy = fixedEngineStrategy{}
+
+	task := &Task{ID: "task-none", MaxRetries: 0}
+	step := &Step{ID: "step-none", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"ok"}`)}
+	if _, err := engine.executeStepWithRecovery(context.Background(), task, step); err != nil {
+		t.Fatalf("execute step: %v", err)
+	}
+	if len(executor.calls) != 1 || executor.calls[0] != "myapp.mutate" {
+		t.Fatalf("expected no automatic verify calls, got %v", executor.calls)
+	}
+}
+
+type verifyFailureExecutor struct {
+	calls []string
+}
+
+func (v *verifyFailureExecutor) Execute(_ context.Context, method string, params json.RawMessage) (*StepResult, error) {
+	v.calls = append(v.calls, method)
+
+	switch method {
+	case "state.checkpoint":
+		payload, _ := json.Marshal(map[string]any{"checkpoint_id": "cp-verify-fail"})
+		return &StepResult{Success: true, Data: payload}, nil
+	case "state.restore":
+		return &StepResult{Success: true}, nil
+	case "myapp.mutate":
+		payload, _ := json.Marshal(map[string]any{"stored": true})
+		return &StepResult{Success: true, Data: payload}, nil
+	case "myapp.verify":
+		payload, _ := json.Marshal(map[string]any{"passed": false, "summary": "verify failed"})
+		return &StepResult{Success: true, Data: payload}, nil
+	default:
+		return &StepResult{Success: true}, nil
+	}
+}
+
+func (v *verifyFailureExecutor) ListPrimitives() []string {
+	return []string{"myapp.mutate", "myapp.verify", "state.checkpoint", "state.restore"}
+}
+
+func TestExecuteStepWithRecovery_VerifyFailureAffectsOutcome(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "myapp.verify",
+		},
+		Rollback: &primitive.AppPrimitiveRollback{
+			Strategy:  "primitive",
+			Primitive: "myapp.rollback",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &appRollbackExecutor{}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+
+	task := &Task{ID: "task-verify-fail", MaxRetries: 0}
+	step := &Step{ID: "step-verify-fail", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"bad"}`)}
+	_, err := engine.executeStepWithRecovery(context.Background(), task, step)
+	if err == nil {
+		t.Fatal("expected verify failure to fail the step")
+	}
+	if !strings.Contains(err.Error(), "verify failed") {
+		t.Fatalf("expected verify failure in error, got %v", err)
+	}
+	if step.Status != StepRolledBack {
+		t.Fatalf("expected verify failure rollback, got %s", step.Status)
+	}
+	if !containsCall(executor.calls, "myapp.rollback") {
+		t.Fatalf("expected declared app rollback to run, got %v", executor.calls)
+	}
+	if containsCall(executor.calls, "state.restore") {
+		t.Fatalf("expected app rollback to avoid workspace restore without checkpoint need, got %v", executor.calls)
+	}
+}
+
+type appRollbackExecutor struct {
+	calls        []string
+	rollbackBody map[string]any
+}
+
+func (v *appRollbackExecutor) Execute(_ context.Context, method string, params json.RawMessage) (*StepResult, error) {
+	v.calls = append(v.calls, method)
+
+	switch method {
+	case "myapp.mutate":
+		payload, _ := json.Marshal(map[string]any{"stored": true, "previous_exists": true, "previous_value": "old"})
+		return &StepResult{Success: true, Data: payload}, nil
+	case "myapp.verify":
+		payload, _ := json.Marshal(map[string]any{"passed": false, "summary": "verify failed"})
+		return &StepResult{Success: true, Data: payload}, nil
+	case "myapp.rollback":
+		_ = json.Unmarshal(params, &v.rollbackBody)
+		return &StepResult{Success: true}, nil
+	case "state.restore":
+		return &StepResult{Success: true}, nil
+	default:
+		payload, _ := json.Marshal(map[string]any{"checkpoint_id": "cp-verify-fail"})
+		return &StepResult{Success: true, Data: payload}, nil
+	}
+}
+
+func (v *appRollbackExecutor) ListPrimitives() []string {
+	return []string{"myapp.mutate", "myapp.verify", "myapp.rollback", "state.checkpoint", "state.restore"}
+}
+
+func TestExecuteStepWithRecovery_AppRollbackFailureSurfacesClearly(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "myapp.verify",
+		},
+		Rollback: &primitive.AppPrimitiveRollback{
+			Strategy:  "primitive",
+			Primitive: "myapp.rollback",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &failingAppRollbackExecutor{}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+
+	task := &Task{ID: "task-rollback-fail", MaxRetries: 0}
+	step := &Step{ID: "step-rollback-fail", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"bad"}`)}
+	_, err := engine.executeStepWithRecovery(context.Background(), task, step)
+	if err == nil {
+		t.Fatal("expected rollback failure to fail the step")
+	}
+	if !strings.Contains(err.Error(), "app rollback failed for myapp.mutate via myapp.rollback") {
+		t.Fatalf("expected rollback failure in error, got %v", err)
+	}
+	if step.Status != StepFailed {
+		t.Fatalf("expected rollback failure to leave step failed, got %s", step.Status)
+	}
+}
+
+type failingAppRollbackExecutor struct {
+	appRollbackExecutor
+}
+
+func (v *failingAppRollbackExecutor) Execute(ctx context.Context, method string, params json.RawMessage) (*StepResult, error) {
+	if method == "myapp.rollback" {
+		v.calls = append(v.calls, method)
+		return nil, errors.New("adapter rollback exploded")
+	}
+	return v.appRollbackExecutor.Execute(ctx, method, params)
+}
+
+func TestExecuteStepWithRecovery_IrreversibleAppPrimitiveWithoutRollbackFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: false,
+			RiskLevel:  cvr.RiskHigh,
+		},
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "myapp.verify",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &verifyFailureExecutor{}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+
+	task := &Task{ID: "task-fail-closed", MaxRetries: 0}
+	step := &Step{ID: "step-fail-closed", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"bad"}`)}
+	_, err := engine.executeStepWithRecovery(context.Background(), task, step)
+	if err == nil {
+		t.Fatal("expected fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "state.restore alone does not recover app state") {
+		t.Fatalf("expected fail-closed explanation, got %v", err)
+	}
+	if containsCall(executor.calls, "state.restore") {
+		t.Fatalf("expected fail-closed path to avoid state.restore, got %v", executor.calls)
+	}
+	if step.Status != StepFailed {
+		t.Fatalf("expected fail-closed path to fail step, got %s", step.Status)
+	}
+}
+
+func TestExecuteStepWithRecovery_RollbackStrategyNonePreservesWorkspaceRestore(t *testing.T) {
+	t.Parallel()
+
+	reg := primitive.NewInMemoryAppRegistry()
+	if err := reg.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:        "myapp",
+		Name:         "myapp.mutate",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   "/tmp/myapp.sock",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: false,
+			RiskLevel:  cvr.RiskHigh,
+		},
+		Rollback: &primitive.AppPrimitiveRollback{
+			Strategy: "none",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	executor := &rollbackTrackingExecutor{checkpointID: "cp-none"}
+	engine := NewEngineWithStores(executor, nil, newMockManifestStore())
+	engine.SetAppRegistry(reg)
+
+	task := &Task{ID: "task-none-rollback", MaxRetries: 0}
+	step := &Step{ID: "step-none-rollback", Primitive: "myapp.mutate", Input: json.RawMessage(`{"value":"bad"}`)}
+	_, err := engine.executeStepWithRecovery(context.Background(), task, step)
+	if err == nil {
+		t.Fatal("expected pause after workspace restore")
+	}
+	if len(executor.restoreCalls) != 1 || executor.restoreCalls[0] != "cp-none" {
+		t.Fatalf("expected state.restore fallback for rollback.strategy=none, got %v", executor.restoreCalls)
+	}
+	if step.Status != StepRolledBack {
+		t.Fatalf("expected rollback.strategy=none to preserve workspace restore behavior, got %s", step.Status)
+	}
+}
+
+func containsCall(calls []string, method string) bool {
+	for _, call := range calls {
+		if call == method {
+			return true
+		}
+	}
+	return false
+}
+
+type fixedEngineStrategy struct{}
+
+func (fixedEngineStrategy) Name() string        { return "fixed" }
+func (fixedEngineStrategy) Description() string { return "fixed" }
+func (fixedEngineStrategy) Run(ctx context.Context, exec cvr.StrategyExecutor, result cvr.ExecuteResult, manifest *cvr.CheckpointManifest) (cvr.StrategyResult, error) {
+	_ = ctx
+	_ = exec
+	_ = result
+	_ = manifest
+	return cvr.StrategyResult{
+		Outcome: cvr.VerifyOutcomePassed,
+		Message: "passed",
+	}, nil
+}

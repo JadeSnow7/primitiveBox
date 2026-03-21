@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"primitivebox/internal/control"
+	"primitivebox/internal/eventing"
 	"primitivebox/internal/primitive"
 	"primitivebox/internal/rpc"
 	pbruntime "primitivebox/internal/runtime"
@@ -57,7 +59,19 @@ func main() {
 	}
 	defer rt.Close()
 
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Fatalf("create data dir: %v", err)
+	}
+	store, err := control.OpenSQLiteStore(filepath.Join(dataDir, "control.db"))
+	if err != nil {
+		log.Fatalf("open control store: %v", err)
+	}
+	defer store.Close()
+	bus := eventing.NewBus(store)
+
 	server := rpc.NewServer(rt.Registry(), nil, nil)
+	server.RegisterAppRegistry(control.NewSQLiteAppRegistry(store, bus))
+	server.AttachEventing(bus, store)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {

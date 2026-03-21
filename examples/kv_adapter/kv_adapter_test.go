@@ -77,6 +77,12 @@ type routerExecutor struct {
 	systemNames []string
 }
 
+type recordingExecutor struct {
+	inner *routerExecutor
+	mu    sync.Mutex
+	calls []string
+}
+
 type fixedStrategy struct {
 	result cvr.StrategyResult
 }
@@ -97,7 +103,9 @@ func TestValidation(t *testing.T) {
 		t.Run("Upsert", testRegistrationUpsert)
 		t.Run("CrossAppConflict", testCrossAppConflict)
 		t.Run("CrashLeavesStaleRoute", testCrashLeavesStaleRoute)
+		t.Run("CrashReactivation", testCrashReactivation)
 		t.Run("NamespaceIsolation", testNamespaceIsolation)
+		t.Run("InvalidVerifyRejected", testRegistrationInvalidVerifyRejected)
 		t.Run("MetadataRichness", testMetadataRichness)
 	})
 
@@ -117,7 +125,18 @@ func TestValidation(t *testing.T) {
 	t.Run("CVR", func(t *testing.T) {
 		t.Run("CheckpointEnforcement", testCVRCheckpointEnforcement)
 		t.Run("IrreversibleDecision", testCVRIrreversibleDecision)
+<<<<<<< HEAD
 		t.Run("VerifyEndpointInvoked", testCVRVerifyEndpointInvoked)
+=======
+		t.Run("LegacyVerifyEndpointTriggersVerification", testCVRLegacyVerifyEndpointTriggersVerification)
+		t.Run("PrimitiveVerifyStrategy", testCVRPrimitiveVerifyStrategy)
+		t.Run("CommandVerifyStrategy", testCVRCommandVerifyStrategy)
+		t.Run("VerifyStrategyNone", testCVRVerifyStrategyNone)
+		t.Run("VerifyFailureAffectsOutcome", testCVRVerifyFailureAffectsOutcome)
+		t.Run("LegacyRollbackEndpointTriggersRollback", testCVRLegacyRollbackEndpointTriggersRollback)
+		t.Run("DeclaredRollbackPreferredOverStateRestore", testCVRDeclaredRollbackPreferredOverStateRestore)
+		t.Run("IrreversibleAppMutationWithoutRollbackFailsClosed", testCVRIrreversibleAppMutationWithoutRollbackFailsClosed)
+>>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 		t.Run("RestoreDoesNotRollbackAdapterState", testCVRRestoreDoesNotRollbackAdapterState)
 		t.Run("MacroSafeEditIsNotGeneric", testCVRMacroSafeEditNotGeneric)
 		t.Run("RecoveryPolicy", testCVRRecoveryPolicy)
@@ -131,21 +150,25 @@ func testRegistrationBasicAndSchema(t *testing.T) {
 	defer adapter.Stop()
 
 	items := env.mustListSandboxAppPrimitives(t)
-	if len(items) != 9 {
-		t.Fatalf("expected 9 app primitives, got %d", len(items))
+	if len(items) != 10 {
+		t.Fatalf("expected 10 app primitives, got %d", len(items))
 	}
-	if !containsManifest(items, "kv.get") || !containsManifest(items, "kv.verify") {
+	if !containsManifest(items, "kv.get") || !containsManifest(items, "kv.verify") || !containsManifest(items, "kv.rollback_set") {
 		t.Fatalf("expected kv.* primitives to be registered, got %+v", items)
 	}
 
 	system := env.mustListSystemPrimitives(t, env.sandboxURL)
-	if containsSystemPrimitive(system, "kv.get") {
-		t.Fatalf("expected /primitives to omit dynamic app primitives, got %+v", system)
+	if !containsSystemPrimitive(system, "kv.get") {
+		t.Fatalf("expected /primitives to include dynamic app primitives, got %+v", system)
+	}
+	systemByName := primitiveSchemaByName(system)
+	if systemByName["kv.get"]["status"] != string(primitive.AppPrimitiveActive) {
+		t.Fatalf("expected kv.get to be listed as active, got %+v", systemByName["kv.get"])
 	}
 
 	hostItems := env.mustListHostSandboxAppPrimitives(t)
-	if len(hostItems) != 9 {
-		t.Fatalf("expected host sandbox app-primitives proxy to list 9 entries, got %d", len(hostItems))
+	if len(hostItems) != 10 {
+		t.Fatalf("expected host sandbox app-primitives proxy to list 10 entries, got %d", len(hostItems))
 	}
 
 	byName := manifestByName(items)
@@ -157,6 +180,12 @@ func testRegistrationBasicAndSchema(t *testing.T) {
 	}
 	if byName["kv.set"].VerifyEndpoint != "kv.verify" {
 		t.Fatalf("expected verify_endpoint to round-trip, got %+v", byName["kv.set"])
+	}
+	if byName["kv.set"].Rollback == nil || byName["kv.set"].Rollback.Strategy != "primitive" || byName["kv.set"].Rollback.Primitive != "kv.rollback_set" {
+		t.Fatalf("expected explicit rollback declaration for kv.set, got %+v", byName["kv.set"].Rollback)
+	}
+	if byName["kv.set"].RollbackEndpoint != "kv.rollback_set" {
+		t.Fatalf("expected stored manifest to mirror explicit rollback into rollback_endpoint, got %+v", byName["kv.set"])
 	}
 	if byName["kv.delete"].RollbackEndpoint != "state.restore" {
 		t.Fatalf("expected rollback_endpoint to round-trip, got %+v", byName["kv.delete"])
@@ -282,13 +311,58 @@ func testCrashLeavesStaleRoute(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatal("expected kv.get to fail after adapter crash")
 	}
-	if !strings.Contains(strings.ToLower(resp.Error.Message), "connect") && !strings.Contains(strings.ToLower(resp.Error.Message), "no such file") {
-		t.Fatalf("expected a stale socket transport error, got %s", resp.Error.Message)
+	if resp.Error.Message != "adapter pb-kv-adapter is unavailable" {
+		t.Fatalf("expected structured unavailable error, got %s", resp.Error.Message)
+	}
+	errorData, ok := resp.Error.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured error data, got %#v", resp.Error.Data)
+	}
+	if errorData["app_id"] != defaultAppID {
+		t.Fatalf("expected app_id in error data, got %#v", errorData)
 	}
 
 	items := env.mustListSandboxAppPrimitives(t)
 	if !containsManifest(items, "kv.get") {
 		t.Fatalf("expected dead adapter manifests to remain registered, got %+v", items)
+	}
+	if manifestByName(items)["kv.get"].Availability != primitive.AppPrimitiveUnavailable {
+		t.Fatalf("expected dead adapter manifest to be marked unavailable, got %+v", manifestByName(items)["kv.get"])
+	}
+
+	primitiveList := env.mustListSystemPrimitives(t, env.sandboxURL)
+	if primitiveSchemaByName(primitiveList)["kv.get"]["status"] != string(primitive.AppPrimitiveUnavailable) {
+		t.Fatalf("expected /primitives to expose unavailable adapter status, got %+v", primitiveSchemaByName(primitiveList)["kv.get"])
+	}
+}
+
+func testCrashReactivation(t *testing.T) {
+	env := newValidationEnv(t)
+	adapter := env.startAdapter(t, adapterStartOptions{})
+	adapter.Kill()
+
+	failed := env.callSandboxRPC(t, "kv.get", map[string]any{"key": "missing"})
+	if failed.Error == nil {
+		t.Fatal("expected kv.get to fail after adapter crash")
+	}
+
+	restarted := env.startAdapter(t, adapterStartOptions{})
+	defer restarted.Stop()
+	waitFor(t, 5*time.Second, func() bool {
+		items := env.mustListSandboxAppPrimitives(t)
+		byName := manifestByName(items)
+		return byName["kv.get"].Availability == primitive.AppPrimitiveActive
+	})
+
+	resp := env.callSandboxRPC(t, "kv.set", map[string]any{"key": "after-restart", "value": "ok"})
+	if resp.Error != nil {
+		t.Fatalf("expected adapter call to succeed after re-registration, got %+v", resp.Error)
+	}
+
+	items := env.mustListSandboxAppPrimitives(t)
+	byName := manifestByName(items)
+	if byName["kv.get"].Availability != primitive.AppPrimitiveActive {
+		t.Fatalf("expected kv.get to be active after reactivation, got %+v", byName["kv.get"])
 	}
 }
 
@@ -325,6 +399,53 @@ func testNamespaceIsolation(t *testing.T) {
 	if !containsManifest(items, "kv.get") || !containsManifest(items, "kv.watch") {
 		t.Fatalf("expected same-namespace different-name registration to succeed, got %+v", items)
 	}
+
+	errResp := registerManifestExpectError(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "kv-watch-app",
+		Name:         "fs.read",
+		Description:  "Attempt to override reserved system primitive.",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	})
+	if errResp.Error == nil {
+		t.Fatal("expected reserved namespace registration to fail")
+	}
+	if !strings.Contains(errResp.Error.Message, "reserved system namespace") {
+		t.Fatalf("expected reserved namespace error, got %+v", errResp)
+	}
+}
+
+func testRegistrationInvalidVerifyRejected(t *testing.T) {
+	env := newValidationEnv(t)
+
+	errResp := registerManifestExpectError(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "kv-invalid-app",
+		Name:         "kv.invalid_verify",
+		Description:  "Invalid verify declaration.",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   uniqueSocketPath(t, "invalid-verify"),
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy: "command",
+		},
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+	if errResp.Error == nil {
+		t.Fatal("expected invalid verify declaration to fail")
+	}
+	if !strings.Contains(errResp.Error.Message, `verify.strategy "command" requires verify.command`) {
+		t.Fatalf("unexpected verify validation error: %+v", errResp)
+	}
 }
 
 func testMetadataRichness(t *testing.T) {
@@ -332,11 +453,17 @@ func testMetadataRichness(t *testing.T) {
 	if _, ok := manifestType.FieldByName("Description"); !ok {
 		t.Fatal("expected description to be expressible")
 	}
+	if _, ok := manifestType.FieldByName("Verify"); !ok {
+		t.Fatal("expected explicit verify contract to exist in current manifest")
+	}
 	if _, ok := manifestType.FieldByName("VerifyEndpoint"); !ok {
 		t.Fatal("expected verify_endpoint to exist in current manifest")
 	}
 	if _, ok := manifestType.FieldByName("RollbackEndpoint"); !ok {
 		t.Fatal("expected rollback_endpoint to exist in current manifest")
+	}
+	if _, ok := manifestType.FieldByName("Rollback"); !ok {
+		t.Fatal("expected explicit rollback contract to exist in current manifest")
 	}
 	if _, ok := manifestType.FieldByName("Version"); ok {
 		t.Fatal("did not expect version in current manifest type")
@@ -816,7 +943,11 @@ func testCVRIrreversibleDecision(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func testCVRVerifyEndpointInvoked(t *testing.T) {
+=======
+func testCVRLegacyVerifyEndpointTriggersVerification(t *testing.T) {
+>>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 	env := newValidationEnv(t)
 
 	socketPath := uniqueSocketPath(t, "counting")
@@ -865,11 +996,467 @@ func testCVRVerifyEndpointInvoked(t *testing.T) {
 	if err := engine.RunTask(context.Background(), task); err != nil {
 		t.Fatalf("engine run failed: %v", err)
 	}
+<<<<<<< HEAD
 	if counting.CallCount("kv.verify") == 0 {
 		t.Fatal("expected verify_endpoint to be invoked by router CVR path")
+=======
+	if counting.CallCount("kv.get") == 0 {
+		t.Fatalf("expected legacy verify_endpoint to trigger kv.get, got kv.get count=%d", counting.CallCount("kv.get"))
+>>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 	}
 	if counting.CallCount("kv.set") == 0 {
 		t.Fatal("expected kv.set to be called at least once")
+	}
+}
+
+func testCVRPrimitiveVerifyStrategy(t *testing.T) {
+	env := newValidationEnv(t)
+
+	socketPath := uniqueSocketPath(t, "counting-primitive-verify")
+	counting := startCountingSocketServer(t, socketPath)
+	defer counting.Close()
+
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.write_with_verify",
+		Description:  "counting kv.write_with_verify",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "kv.verify",
+		},
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.verify",
+		Description:  "counting kv.verify",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	})
+
+	executor := env.newRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("counting set with primitive verify", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.write_with_verify",
+		Params: map[string]any{
+			"key":   "verify",
+			"value": "primitive",
+		},
+	}})
+	if err := engine.RunTask(context.Background(), task); err != nil {
+		t.Fatalf("engine run failed: %v", err)
+	}
+	if counting.CallCount("kv.verify") == 0 {
+		t.Fatalf("expected primitive verify to run, got kv.verify count=%d", counting.CallCount("kv.verify"))
+	}
+}
+
+func testCVRCommandVerifyStrategy(t *testing.T) {
+	env := newValidationEnv(t)
+
+	socketPath := uniqueSocketPath(t, "counting-command-verify")
+	counting := startCountingSocketServer(t, socketPath)
+	defer counting.Close()
+
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.write_with_command_verify",
+		Description:  "counting kv.write_with_command_verify",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy: "command",
+			Command:  "true",
+		},
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+
+	executor := env.newRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("counting set with command verify", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.write_with_command_verify",
+		Params: map[string]any{
+			"key":   "verify",
+			"value": "command",
+		},
+	}})
+	if err := engine.RunTask(context.Background(), task); err != nil {
+		t.Fatalf("engine run failed: %v", err)
+	}
+	if counting.CallCount("kv.write_with_command_verify") == 0 {
+		t.Fatal("expected primary app primitive to run")
+	}
+}
+
+func testCVRVerifyStrategyNone(t *testing.T) {
+	env := newValidationEnv(t)
+
+	socketPath := uniqueSocketPath(t, "counting-none-verify")
+	counting := startCountingSocketServer(t, socketPath)
+	defer counting.Close()
+
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.write_without_verify",
+		Description:  "counting kv.write_without_verify",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy: "none",
+		},
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.verify",
+		Description:  "counting kv.verify",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	})
+
+	executor := env.newRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("counting set without verify", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.write_without_verify",
+		Params: map[string]any{
+			"key":   "verify",
+			"value": "none",
+		},
+	}})
+	if err := engine.RunTask(context.Background(), task); err != nil {
+		t.Fatalf("engine run failed: %v", err)
+	}
+	if counting.CallCount("kv.verify") != 0 {
+		t.Fatalf("expected verify.strategy=none to skip automatic verify, got kv.verify count=%d", counting.CallCount("kv.verify"))
+	}
+}
+
+func testCVRVerifyFailureAffectsOutcome(t *testing.T) {
+	env := newValidationEnv(t)
+
+	socketPath := uniqueSocketPath(t, "counting-verify-fail")
+	counting := startCustomSocketServer(t, socketPath, func(req appRPCRequest, conn net.Conn) {
+		switch req.Method {
+		case "kv.verify_fail":
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:     req.ID,
+				Result: map[string]any{"passed": false, "summary": "verify failed"},
+			})
+		default:
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:     req.ID,
+				Result: map[string]any{"ok": true, "method": req.Method},
+			})
+		}
+	})
+	defer counting.Close()
+
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.write_verify_fails",
+		Description:  "counting kv.write_verify_fails",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "kv.verify_fail",
+		},
+		Rollback: &primitive.AppPrimitiveRollback{
+			Strategy:  "primitive",
+			Primitive: "kv.rollback_verify_fails",
+		},
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: false,
+			RiskLevel:  cvr.RiskHigh,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.verify_fail",
+		Description:  "counting kv.verify_fail",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.rollback_verify_fails",
+		Description:  "counting kv.rollback_verify_fails",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentRollback,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+
+	executor := env.newRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("counting set with failing verify", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.write_verify_fails",
+		Params: map[string]any{
+			"key":   "verify",
+			"value": "fail",
+		},
+	}})
+	err := engine.RunTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected verify failure to fail the task")
+	}
+	if !strings.Contains(err.Error(), "verify failed") {
+		t.Fatalf("expected verify failure in task error, got %v", err)
+	}
+	if counting.CallCount("kv.verify_fail") == 0 {
+		t.Fatal("expected failing verify primitive to be called")
+	}
+	if task.Status != orchestrator.TaskPaused {
+		t.Fatalf("expected task to pause on verify failure, got %s", task.Status)
+	}
+	if len(task.Steps) == 0 || task.Steps[0].Status != orchestrator.StepRolledBack {
+		t.Fatalf("expected step to roll back after verify failure, got %+v", task.Steps)
+	}
+}
+
+func testCVRLegacyRollbackEndpointTriggersRollback(t *testing.T) {
+	env := newValidationEnv(t)
+
+	socketPath := uniqueSocketPath(t, "counting-legacy-rollback")
+	counting := startCustomSocketServer(t, socketPath, func(req appRPCRequest, conn net.Conn) {
+		switch req.Method {
+		case "kv.verify_fail":
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:     req.ID,
+				Result: map[string]any{"passed": false, "summary": "verify failed"},
+			})
+		default:
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:     req.ID,
+				Result: map[string]any{"ok": true, "method": req.Method},
+			})
+		}
+	})
+	defer counting.Close()
+
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.write_with_legacy_rollback",
+		Description:  "counting kv.write_with_legacy_rollback",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "kv.verify_fail",
+		},
+		RollbackEndpoint: "kv.rollback_legacy",
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.verify_fail",
+		Description:  "counting kv.verify_fail",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.rollback_legacy",
+		Description:  "counting kv.rollback_legacy",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentRollback,
+			Reversible: true,
+			RiskLevel:  cvr.RiskMedium,
+		},
+	})
+
+	executor := env.newRecordingRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("legacy rollback", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.write_with_legacy_rollback",
+		Params:    map[string]any{"key": "verify", "value": "legacy"},
+	}})
+	err := engine.RunTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected rollback-triggering failure")
+	}
+	if counting.CallCount("kv.rollback_legacy") == 0 {
+		t.Fatalf("expected legacy rollback_endpoint to trigger rollback primitive, got counts=%v", counting.counts)
+	}
+	if executor.CallCount("state.restore") != 0 {
+		t.Fatalf("expected legacy app rollback to avoid workspace restore without checkpoint, got state.restore count=%d", executor.CallCount("state.restore"))
+	}
+}
+
+func testCVRDeclaredRollbackPreferredOverStateRestore(t *testing.T) {
+	env := newValidationEnv(t)
+	adapter := env.startAdapter(t, adapterStartOptions{})
+	defer adapter.Stop()
+
+	seed := env.callSandboxRPC(t, "kv.set", map[string]any{"key": "rolled", "value": "before"})
+	if seed.Error != nil {
+		t.Fatalf("seed kv.set failed: %+v", seed.Error)
+	}
+
+	executor := env.newRecordingRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("declared rollback", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.set",
+		Params: map[string]any{
+			"key":   "rolled",
+			"value": "after",
+			"verify_control": map[string]any{
+				"force_fail": true,
+				"message":    "verify failed after write",
+			},
+		},
+	}})
+	err := engine.RunTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected verify-triggered rollback failure")
+	}
+	if executor.CallCount("kv.rollback_set") == 0 {
+		t.Fatalf("expected declared app rollback to run, got calls=%v", executor.calls)
+	}
+	if executor.CallCount("state.restore") != 0 {
+		t.Fatalf("expected declared app rollback to be used instead of bare state.restore, got count=%d", executor.CallCount("state.restore"))
+	}
+
+	getResp := env.callSandboxRPC(t, "kv.get", map[string]any{"key": "rolled"})
+	if getResp.Error != nil {
+		t.Fatalf("expected kv.get after rollback to succeed, got %+v", getResp.Error)
+	}
+	if mustMap(t, getResp.Result)["value"] != "before" {
+		t.Fatalf("expected app rollback to restore previous value, got %#v", getResp.Result)
+	}
+}
+
+func testCVRIrreversibleAppMutationWithoutRollbackFailsClosed(t *testing.T) {
+	env := newValidationEnv(t)
+
+	socketPath := uniqueSocketPath(t, "counting-fail-closed")
+	counting := startCustomSocketServer(t, socketPath, func(req appRPCRequest, conn net.Conn) {
+		switch req.Method {
+		case "kv.verify_fail":
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:     req.ID,
+				Result: map[string]any{"passed": false, "summary": "verify failed"},
+			})
+		default:
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:     req.ID,
+				Result: map[string]any{"ok": true, "method": req.Method},
+			})
+		}
+	})
+	defer counting.Close()
+
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.write_without_rollback",
+		Description:  "counting kv.write_without_rollback",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Verify: &primitive.AppPrimitiveVerify{
+			Strategy:  "primitive",
+			Primitive: "kv.verify_fail",
+		},
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentMutation,
+			Reversible: false,
+			RiskLevel:  cvr.RiskHigh,
+		},
+	})
+	registerManifest(t, env.sandboxURL, primitive.AppPrimitiveManifest{
+		AppID:        "counting-kv",
+		Name:         "kv.verify_fail",
+		Description:  "counting kv.verify_fail",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		SocketPath:   socketPath,
+		Intent: cvr.PrimitiveIntent{
+			Category:   cvr.IntentQuery,
+			Reversible: true,
+			RiskLevel:  cvr.RiskLow,
+		},
+	})
+
+	executor := env.newRecordingRouterExecutor()
+	engine := orchestrator.NewEngineWithStores(executor, nil, &manifestStore{})
+	engine.SetAppRegistry(env.appRegistry)
+	task := engine.CreateTask("fail closed without rollback", testSandboxID, []orchestrator.StepDef{{
+		Primitive: "kv.write_without_rollback",
+		Params:    map[string]any{"key": "verify", "value": "fail"},
+	}})
+	err := engine.RunTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "state.restore alone does not recover app state") {
+		t.Fatalf("expected fail-closed explanation, got %v", err)
+	}
+	if executor.CallCount("state.restore") != 0 {
+		t.Fatalf("expected fail-closed path to avoid state.restore, got count=%d", executor.CallCount("state.restore"))
+	}
+	if counting.CallCount("kv.verify_fail") == 0 {
+		t.Fatal("expected verify primitive to run before fail-closed recovery decision")
 	}
 }
 
@@ -986,7 +1573,7 @@ func newValidationEnv(t *testing.T) *validationEnv {
 	sandboxServer := rpc.NewServer(registry, nil, nil)
 	sandboxServer.RegisterAppRegistry(appRegistry)
 	sandboxServer.AttachEventing(eventing.NewBus(sandboxEvents), sandboxEvents)
-	sandboxHTTP := httptest.NewServer(sandboxServer.Handler())
+	sandboxHTTP := newTestHTTPServer(t, sandboxServer.Handler())
 	t.Cleanup(sandboxHTTP.Close)
 
 	manager := sandbox.NewManagerWithOptions(passthroughRuntimeDriver{}, sandbox.ManagerOptions{Store: sandbox.NewMemoryStore()})
@@ -1005,7 +1592,7 @@ func newValidationEnv(t *testing.T) *validationEnv {
 	hostEvents := &memoryEventStore{}
 	hostServer := rpc.NewServer(primitive.NewRegistry(), nil, manager)
 	hostServer.AttachEventing(eventing.NewBus(hostEvents), hostEvents)
-	hostHTTP := httptest.NewServer(hostServer.Handler())
+	hostHTTP := newTestHTTPServer(t, hostServer.Handler())
 	t.Cleanup(hostHTTP.Close)
 
 	return &validationEnv{
@@ -1234,6 +1821,10 @@ func (env *validationEnv) newRouterExecutor() *routerExecutor {
 		appRegistry: env.appRegistry,
 		systemNames: registry.List(),
 	}
+}
+
+func (env *validationEnv) newRecordingRouterExecutor() *recordingExecutor {
+	return &recordingExecutor{inner: env.newRouterExecutor()}
 }
 
 func (r *routerExecutor) Execute(ctx context.Context, method string, params json.RawMessage) (*orchestrator.StepResult, error) {
@@ -1614,6 +2205,32 @@ func registerManifest(t *testing.T, sandboxURL string, manifest primitive.AppPri
 	}
 }
 
+func registerManifestExpectError(t *testing.T, sandboxURL string, manifest primitive.AppPrimitiveManifest) httpRPCResponse {
+	t.Helper()
+	reqBody := mustJSON(httpRPCRequest{
+		JSONRPC: "2.0",
+		Method:  "app.register",
+		Params:  mustJSON(manifest),
+		ID:      "register-" + manifest.Name,
+	})
+	req, err := http.NewRequest(http.MethodPost, sandboxURL+"/rpc", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("new register request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-PB-Origin", "sandbox")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("register manifest request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var rpcResp httpRPCResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		t.Fatalf("decode register manifest response: %v", err)
+	}
+	return rpcResp
+}
+
 func (env *validationEnv) mustGetManifest(t *testing.T, name string) primitive.AppPrimitiveManifest {
 	t.Helper()
 	items := env.mustListSandboxAppPrimitives(t)
@@ -1639,6 +2256,41 @@ func manifestByName(items []primitive.AppPrimitiveManifest) map[string]primitive
 		out[item.Name] = item
 	}
 	return out
+}
+
+func primitiveSchemaByName(items []map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		name, _ := item["name"].(string)
+		if name == "" {
+			continue
+		}
+		out[name] = item
+	}
+	return out
+}
+
+func (r *recordingExecutor) Execute(ctx context.Context, method string, params json.RawMessage) (*orchestrator.StepResult, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, method)
+	r.mu.Unlock()
+	return r.inner.Execute(ctx, method, params)
+}
+
+func (r *recordingExecutor) ListPrimitives() []string {
+	return r.inner.ListPrimitives()
+}
+
+func (r *recordingExecutor) CallCount(method string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, call := range r.calls {
+		if call == method {
+			count++
+		}
+	}
+	return count
 }
 
 func containsSystemPrimitive(items []map[string]any, name string) bool {
@@ -1705,6 +2357,7 @@ func startCustomSocketServer(t *testing.T, socketPath string, handler func(appRP
 	_ = os.Remove(socketPath)
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
+		skipIfListenUnavailable(t, err)
 		t.Fatalf("listen on %s: %v", socketPath, err)
 	}
 	server := &customSocketServer{
@@ -1736,6 +2389,45 @@ func startCustomSocketServer(t *testing.T, socketPath string, handler func(appRP
 	}()
 	t.Cleanup(server.Close)
 	return server
+}
+
+func newTestHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if skipIfListenUnavailableValue(t, recovered) {
+				return
+			}
+			panic(recovered)
+		}
+	}()
+
+	return httptest.NewServer(handler)
+}
+
+func skipIfListenUnavailable(t *testing.T, err error) {
+	t.Helper()
+	if isListenUnavailable(err.Error()) {
+		t.Skipf("skipping test: listen unavailable in current environment: %v", err)
+	}
+}
+
+func skipIfListenUnavailableValue(t *testing.T, recovered any) bool {
+	t.Helper()
+	if recovered == nil {
+		return false
+	}
+	if isListenUnavailable(fmt.Sprint(recovered)) {
+		t.Skipf("skipping test: listen unavailable in current environment: %v", recovered)
+		return true
+	}
+	return false
+}
+
+func isListenUnavailable(message string) bool {
+	return strings.Contains(message, "bind: operation not permitted") ||
+		strings.Contains(message, "failed to listen on a port")
 }
 
 func startCountingSocketServer(t *testing.T, socketPath string) *customSocketServer {

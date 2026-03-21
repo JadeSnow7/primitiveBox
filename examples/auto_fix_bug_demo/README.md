@@ -30,17 +30,19 @@ auto_fix_bug_demo/
 ## 快速运行
 
 ```bash
-# 1. 启动 PrimitiveBox
-make build
-./bin/pb server start --workspace ./testdata/buggy_calc
+# 1. 直接跑 demo（默认会复制 testdata 并在本地自启 pb server）
+python3 examples/auto_fix_bug_demo/run_demo.py
 
-# 2. 开一个终端看事件流
-python3 stream_demo.py
-
-# 3. 另一个终端跑 agent
-export ANTHROPIC_API_KEY="sk-ant-..."
-python3 run_demo.py
+# 2. 如果你想单独看事件流，也可以先手动起一个 server
+./bin/pb server start --workspace ./examples/auto_fix_bug_demo/testdata/buggy_calc --port 8091
+python3 examples/auto_fix_bug_demo/stream_demo.py
 ```
+
+说明：
+
+- 默认模式会在缺少 `anthropic` 依赖或 `ANTHROPIC_API_KEY` 时回退到一个确定性的 scripted agent，保证 demo 可跑通
+- 设置 `PB_DEMO_MODE=llm` 并提供 `ANTHROPIC_API_KEY` 后，可切回 Anthropic tool-use 模式
+- 设置 `PB_HOST` 后，demo 会复用现有 PrimitiveBox server，而不是自启本地实例
 
 ## 预期流程
 
