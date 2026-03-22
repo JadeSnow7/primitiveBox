@@ -7,6 +7,7 @@ build:
 	mkdir -p $(GO_BUILD_CACHE)
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb ./cmd/pb/
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-runtimed ./cmd/pb-runtimed/
+	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-os-adapter ./cmd/pb-os-adapter/
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-test-adapter ./cmd/pb-test-adapter/
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-repo-adapter ./cmd/pb-repo-adapter/
 
@@ -31,6 +32,7 @@ sandbox-image: build
 	mkdir -p $(GO_BUILD_CACHE)
 	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-linux-arm64 ./cmd/pb
 	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-runtimed-linux-arm64 ./cmd/pb-runtimed
+	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-os-adapter-linux-arm64 ./cmd/pb-os-adapter
 	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-test-adapter-linux-arm64 ./cmd/pb-test-adapter
 	GOCACHE=$(GO_BUILD_CACHE) GOOS=linux GOARCH=arm64 go build -o bin/pb-repo-adapter-linux-arm64 ./cmd/pb-repo-adapter
 	docker build -f testdata/docker/Dockerfile -t primitivebox-sandbox:latest .

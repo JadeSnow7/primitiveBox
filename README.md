@@ -71,6 +71,8 @@ The near-term direction is to strengthen PrimitiveBox as an execution runtime be
 - expand the primitive model carefully rather than accumulating ad hoc tools
 - prepare a clean split between system primitives and future application primitives exposed by AI-native apps
 
+Phase 3 reference adapter work now includes a runnable `pb-os-adapter` slice for `process.*` primitives; see [`docs/phase3-os-adapter-demo.md`](docs/phase3-os-adapter-demo.md) for the maintainer validation path.
+
 ## Quick Start
 
 Build the CLI:

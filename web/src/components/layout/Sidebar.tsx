@@ -2,12 +2,13 @@ import { Badge } from '@/components/shared/Badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
-type View = 'trace' | 'primitives' | 'app-primitives'
+type View = 'trace' | 'primitives' | 'app-primitives' | 'workspace'
 
 const items: Array<{ id: View; label: string; short: string; description: string }> = [
   { id: 'trace', label: 'CVR Trace', short: 'T', description: 'Recovery and checkpoint instrumentation' },
   { id: 'primitives', label: 'System Primitives', short: 'P', description: 'Schema-driven primitive execution' },
-  { id: 'app-primitives', label: 'App Primitives', short: 'A', description: 'Registered application-level contracts' }
+  { id: 'app-primitives', label: 'App Primitives', short: 'A', description: 'Registered application-level contracts' },
+  { id: 'workspace', label: 'AI Workspace', short: 'W', description: 'AI-controlled panel workspace via UI primitives' },
 ]
 
 export function Sidebar({

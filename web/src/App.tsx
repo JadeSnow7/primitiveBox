@@ -4,10 +4,11 @@ import { Shell } from '@/components/layout/Shell'
 import { AppPrimitivePage } from '@/pages/AppPrimitivePage'
 import { PrimitivePage } from '@/pages/PrimitivePage'
 import { TracePage } from '@/pages/TracePage'
+import { WorkspacePage } from '@/pages/WorkspacePage'
 import { useSandboxStore } from '@/store/sandboxStore'
 import { useUIStore } from '@/store/uiStore'
 
-type View = 'trace' | 'primitives' | 'app-primitives'
+type View = 'trace' | 'primitives' | 'app-primitives' | 'workspace'
 
 export default function App() {
   const [view, setView] = useState<View>('trace')
@@ -43,6 +44,7 @@ export default function App() {
       {view === 'trace' ? <TracePage /> : null}
       {view === 'primitives' ? <PrimitivePage /> : null}
       {view === 'app-primitives' ? <AppPrimitivePage /> : null}
+      {view === 'workspace' ? <WorkspacePage /> : null}
     </Shell>
   )
 }

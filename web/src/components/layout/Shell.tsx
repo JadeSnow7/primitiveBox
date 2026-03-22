@@ -5,7 +5,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { Topbar } from '@/components/layout/Topbar'
 import { useUIStore } from '@/store/uiStore'
 
-type View = 'trace' | 'primitives' | 'app-primitives'
+type View = 'trace' | 'primitives' | 'app-primitives' | 'workspace'
 
 export function Shell({
   view,
