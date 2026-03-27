@@ -132,6 +132,7 @@ func (s *SQLiteStore) init() error {
 			description TEXT,
 			input_schema_json TEXT NOT NULL,
 			output_schema_json TEXT NOT NULL,
+			ui_layout_hint TEXT,
 			socket_path TEXT NOT NULL,
 			availability TEXT NOT NULL,
 			verify_endpoint TEXT,
@@ -165,6 +166,7 @@ func (s *SQLiteStore) init() error {
 	}
 	appPrimitiveMigrations := []string{
 		`ALTER TABLE app_primitives ADD COLUMN availability TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE app_primitives ADD COLUMN ui_layout_hint TEXT`,
 	}
 	for _, stmt := range appPrimitiveMigrations {
 		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
@@ -180,6 +182,11 @@ func (s *SQLiteStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+// DB returns the underlying *sql.DB for callers that need direct access (e.g. package store).
+func (s *SQLiteStore) DB() *sql.DB {
+	return s.db
 }
 
 // Upsert stores or updates sandbox metadata.

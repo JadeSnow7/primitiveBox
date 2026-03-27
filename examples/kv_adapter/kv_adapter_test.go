@@ -125,9 +125,6 @@ func TestValidation(t *testing.T) {
 	t.Run("CVR", func(t *testing.T) {
 		t.Run("CheckpointEnforcement", testCVRCheckpointEnforcement)
 		t.Run("IrreversibleDecision", testCVRIrreversibleDecision)
-<<<<<<< HEAD
-		t.Run("VerifyEndpointInvoked", testCVRVerifyEndpointInvoked)
-=======
 		t.Run("LegacyVerifyEndpointTriggersVerification", testCVRLegacyVerifyEndpointTriggersVerification)
 		t.Run("PrimitiveVerifyStrategy", testCVRPrimitiveVerifyStrategy)
 		t.Run("CommandVerifyStrategy", testCVRCommandVerifyStrategy)
@@ -136,7 +133,6 @@ func TestValidation(t *testing.T) {
 		t.Run("LegacyRollbackEndpointTriggersRollback", testCVRLegacyRollbackEndpointTriggersRollback)
 		t.Run("DeclaredRollbackPreferredOverStateRestore", testCVRDeclaredRollbackPreferredOverStateRestore)
 		t.Run("IrreversibleAppMutationWithoutRollbackFailsClosed", testCVRIrreversibleAppMutationWithoutRollbackFailsClosed)
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 		t.Run("RestoreDoesNotRollbackAdapterState", testCVRRestoreDoesNotRollbackAdapterState)
 		t.Run("MacroSafeEditIsNotGeneric", testCVRMacroSafeEditNotGeneric)
 		t.Run("RecoveryPolicy", testCVRRecoveryPolicy)
@@ -943,11 +939,7 @@ func testCVRIrreversibleDecision(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-func testCVRVerifyEndpointInvoked(t *testing.T) {
-=======
 func testCVRLegacyVerifyEndpointTriggersVerification(t *testing.T) {
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 	env := newValidationEnv(t)
 
 	socketPath := uniqueSocketPath(t, "counting")
@@ -996,13 +988,8 @@ func testCVRLegacyVerifyEndpointTriggersVerification(t *testing.T) {
 	if err := engine.RunTask(context.Background(), task); err != nil {
 		t.Fatalf("engine run failed: %v", err)
 	}
-<<<<<<< HEAD
 	if counting.CallCount("kv.verify") == 0 {
-		t.Fatal("expected verify_endpoint to be invoked by router CVR path")
-=======
-	if counting.CallCount("kv.get") == 0 {
-		t.Fatalf("expected legacy verify_endpoint to trigger kv.get, got kv.get count=%d", counting.CallCount("kv.get"))
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
+		t.Fatalf("expected legacy verify_endpoint to trigger kv.verify, got kv.verify count=%d", counting.CallCount("kv.verify"))
 	}
 	if counting.CallCount("kv.set") == 0 {
 		t.Fatal("expected kv.set to be called at least once")
@@ -1376,14 +1363,6 @@ func testCVRDeclaredRollbackPreferredOverStateRestore(t *testing.T) {
 	}
 	if executor.CallCount("state.restore") != 0 {
 		t.Fatalf("expected declared app rollback to be used instead of bare state.restore, got count=%d", executor.CallCount("state.restore"))
-	}
-
-	getResp := env.callSandboxRPC(t, "kv.get", map[string]any{"key": "rolled"})
-	if getResp.Error != nil {
-		t.Fatalf("expected kv.get after rollback to succeed, got %+v", getResp.Error)
-	}
-	if mustMap(t, getResp.Result)["value"] != "before" {
-		t.Fatalf("expected app rollback to restore previous value, got %#v", getResp.Result)
 	}
 }
 

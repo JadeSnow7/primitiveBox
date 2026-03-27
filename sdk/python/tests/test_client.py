@@ -142,24 +142,51 @@ def test_stream_call_and_shell_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_db_and_browser_wrappers(monkeypatch: pytest.MonkeyPatch) -> None:
-    responses = {
-        "http://localhost:8080/rpc": {
-            "jsonrpc": "2.0",
-            "result": {
-                "data": {
-                    "session_id": "browser-123",
-                    "url": "http://example.test",
-                    "title": "Example",
-                }
-            },
-            "id": 2,
-        },
-    }
-    monkeypatch.setattr("urllib.request.urlopen", make_urlopen(responses))
+    captured_methods: list[str] = []
+
+    def _urlopen(request, timeout=0):  # noqa: ARG001 - signature matches stdlib usage
+        url = request if isinstance(request, str) else request.full_url
+        if url != "http://localhost:8080/rpc":
+            raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
+        payload = json.loads(request.data.decode("utf-8"))
+        captured_methods.append(payload["method"])
+        if payload["method"] == "db.query_readonly":
+            return FakeResponse({
+                "jsonrpc": "2.0",
+                "result": {
+                    "data": {
+                        "dialect": "sqlite",
+                        "columns": [{"name": "id", "database_type": "INTEGER", "nullable": False}],
+                        "rows": [{"id": 1}],
+                        "row_count": 1,
+                        "limited": False,
+                        "query": "select 1 as id",
+                    }
+                },
+                "id": payload["id"],
+            })
+        if payload["method"] == "browser.goto":
+            return FakeResponse({
+                "jsonrpc": "2.0",
+                "result": {
+                    "data": {
+                        "session_id": "browser-123",
+                        "url": "http://example.test",
+                        "title": "Example",
+                    }
+                },
+                "id": payload["id"],
+            })
+        raise HTTPError(url, 404, "unknown method", hdrs=None, fp=None)
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
 
     client = PrimitiveBoxClient("http://localhost:8080")
+    db_rows = client.db.query_readonly({"dialect": "sqlite", "path": "sample.db"}, "select 1 as id")
     browser = client.browser.goto("http://example.test")
 
+    assert captured_methods == ["db.query_readonly", "browser.goto"]
+    assert db_rows["data"]["row_count"] == 1
     assert browser["data"]["session_id"] == "browser-123"
 
 

@@ -17,6 +17,7 @@ type AppPrimitiveManifest struct {
 	Description      string                   `json:"description"`
 	InputSchema      json.RawMessage          `json:"input_schema"`
 	OutputSchema     json.RawMessage          `json:"output_schema"`
+	UILayoutHint     string                   `json:"ui_layout_hint,omitempty"`
 	SocketPath       string                   `json:"socket_path"`
 	Availability     AppPrimitiveAvailability `json:"status,omitempty"`
 	VerifyEndpoint   string                   `json:"verify_endpoint,omitempty"`
@@ -189,6 +190,7 @@ var reservedSystemPrimitiveNamespaces = [...]string{
 func NormalizeAppPrimitiveManifest(manifest AppPrimitiveManifest) (AppPrimitiveManifest, error) {
 	normalized := cloneAppPrimitiveManifest(manifest)
 	normalized.Availability = normalizeAppPrimitiveAvailability(normalized.Availability)
+	normalized.UILayoutHint = normalizeUILayoutHint(normalized.UILayoutHint)
 
 	normalized.VerifyEndpoint = strings.TrimSpace(normalized.VerifyEndpoint)
 	normalized.RollbackEndpoint = strings.TrimSpace(normalized.RollbackEndpoint)
@@ -225,6 +227,10 @@ func NormalizeAppPrimitiveManifest(manifest AppPrimitiveManifest) (AppPrimitiveM
 		normalized.RollbackEndpoint = normalized.Rollback.Primitive
 	}
 	return normalized, nil
+}
+
+func normalizeUILayoutHint(hint string) string {
+	return strings.ToLower(strings.TrimSpace(hint))
 }
 
 func normalizeAppPrimitiveAvailability(availability AppPrimitiveAvailability) AppPrimitiveAvailability {

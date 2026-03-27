@@ -200,6 +200,152 @@ func TestAppRouter_AppPrimitive_MalformedResponse(t *testing.T) {
 	}
 }
 
+func TestAppRouter_AppPrimitive_VerifyReceivesOriginalParams(t *testing.T) {
+	t.Parallel()
+
+	registry := primitive.NewInMemoryAppRegistry()
+	socketPath := shortSocketPath(t)
+	var calls []map[string]any
+	startTestAppSocket(t, socketPath, func(req map[string]any) map[string]any {
+		calls = append(calls, req)
+		switch req["method"] {
+		case "myapp.mutate":
+			return map[string]any{
+				"id":     req["id"],
+				"result": map[string]any{"ok": true},
+				"error":  nil,
+			}
+		case "myapp.verify":
+			return map[string]any{
+				"id":     req["id"],
+				"result": map[string]any{"passed": true},
+				"error":  nil,
+			}
+		default:
+			t.Fatalf("unexpected method: %#v", req["method"])
+			return nil
+		}
+	})
+
+	if err := registry.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:          "myapp",
+		Name:           "myapp.mutate",
+		InputSchema:    json.RawMessage(`{"type":"object"}`),
+		OutputSchema:   json.RawMessage(`{"type":"object"}`),
+		SocketPath:     socketPath,
+		VerifyEndpoint: "myapp.verify",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	router := NewRouter(primitive.NewRegistry())
+	router.RegisterAppRegistry(registry)
+
+	_, err := router.Route(context.Background(), "myapp.mutate", json.RawMessage(`{"name":"demo","enabled":true}`))
+	if err != nil {
+		t.Fatalf("route app primitive: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 app RPC calls, got %d", len(calls))
+	}
+	for idx, method := range []string{"myapp.mutate", "myapp.verify"} {
+		if calls[idx]["method"] != method {
+			t.Fatalf("calls[%d].method = %#v, want %q", idx, calls[idx]["method"], method)
+		}
+		params, ok := calls[idx]["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("calls[%d].params = %#v", idx, calls[idx]["params"])
+		}
+		if params["name"] != "demo" || params["enabled"] != true {
+			t.Fatalf("calls[%d].params = %#v, want original params", idx, params)
+		}
+	}
+}
+
+func TestAppRouter_AppPrimitive_RollbackReceivesOriginalParamsOnVerifyFailure(t *testing.T) {
+	t.Parallel()
+
+	registry := primitive.NewInMemoryAppRegistry()
+	socketPath := shortSocketPath(t)
+	var calls []map[string]any
+	startTestAppSocket(t, socketPath, func(req map[string]any) map[string]any {
+		calls = append(calls, req)
+		switch req["method"] {
+		case "myapp.mutate":
+			return map[string]any{
+				"id":     req["id"],
+				"result": map[string]any{"ok": true},
+				"error":  nil,
+			}
+		case "myapp.verify":
+			return map[string]any{
+				"id":     req["id"],
+				"result": map[string]any{"passed": false},
+				"error":  nil,
+			}
+		case "myapp.rollback":
+			return map[string]any{
+				"id":     req["id"],
+				"result": map[string]any{"rolled_back": true},
+				"error":  nil,
+			}
+		default:
+			t.Fatalf("unexpected method: %#v", req["method"])
+			return nil
+		}
+	})
+
+	if err := registry.Register(context.Background(), primitive.AppPrimitiveManifest{
+		AppID:            "myapp",
+		Name:             "myapp.mutate",
+		InputSchema:      json.RawMessage(`{"type":"object"}`),
+		OutputSchema:     json.RawMessage(`{"type":"object"}`),
+		SocketPath:       socketPath,
+		VerifyEndpoint:   "myapp.verify",
+		RollbackEndpoint: "myapp.rollback",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	router := NewRouter(primitive.NewRegistry())
+	router.RegisterAppRegistry(registry)
+
+	_, err := router.Route(context.Background(), "myapp.mutate", json.RawMessage(`{"name":"demo","enabled":true}`))
+	if err == nil || !strings.Contains(err.Error(), "app_primitive_verify_failed") {
+		t.Fatalf("expected verify failure, got %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 app RPC calls, got %d", len(calls))
+	}
+	for idx, method := range []string{"myapp.mutate", "myapp.verify", "myapp.rollback"} {
+		if calls[idx]["method"] != method {
+			t.Fatalf("calls[%d].method = %#v, want %q", idx, calls[idx]["method"], method)
+		}
+		params, ok := calls[idx]["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("calls[%d].params = %#v", idx, calls[idx]["params"])
+		}
+		if idx < 2 {
+			if params["name"] != "demo" || params["enabled"] != true {
+				t.Fatalf("calls[%d].params = %#v, want original params", idx, params)
+			}
+			continue
+		}
+		rollbackParams, ok := params["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("rollback params = %#v", params)
+		}
+		if rollbackParams["name"] != "demo" || rollbackParams["enabled"] != true {
+			t.Fatalf("rollback params = %#v, want original params nested under params", rollbackParams)
+		}
+		if params["primitive"] != "myapp.mutate" {
+			t.Fatalf("rollback envelope = %#v, want primitive name", params)
+		}
+	}
+}
+
 func shortSocketPath(t *testing.T) string {
 	t.Helper()
 
@@ -229,28 +375,33 @@ func startTestAppSocket(t *testing.T, socketPath string, handler func(map[string
 	})
 
 	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
 
-		line, err := bufio.NewReader(conn).ReadBytes('\n')
-		if err != nil {
-			return
+			func() {
+				defer conn.Close()
+
+				line, err := bufio.NewReader(conn).ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req map[string]any
+				if err := json.Unmarshal(line, &req); err != nil {
+					t.Errorf("decode request: %v", err)
+					return
+				}
+				resp := handler(req)
+				data, err := json.Marshal(resp)
+				if err != nil {
+					t.Errorf("encode response: %v", err)
+					return
+				}
+				_, _ = conn.Write(append(data, '\n'))
+			}()
 		}
-		var req map[string]any
-		if err := json.Unmarshal(line, &req); err != nil {
-			t.Errorf("decode request: %v", err)
-			return
-		}
-		resp := handler(req)
-		data, err := json.Marshal(resp)
-		if err != nil {
-			t.Errorf("encode response: %v", err)
-			return
-		}
-		_, _ = conn.Write(append(data, '\n'))
 	}()
 }
 

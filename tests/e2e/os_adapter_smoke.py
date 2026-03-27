@@ -80,6 +80,14 @@ def wait_for_registration(endpoint: str, timeout_s: int = 20) -> dict:
         "process.wait",
         "process.terminate",
         "process.kill",
+        "service.status",
+        "service.start",
+        "service.stop",
+        "service.restart",
+        "pkg.list",
+        "pkg.install",
+        "pkg.remove",
+        "pkg.verify",
     }
     while time.time() < deadline:
         payload = http_get_json(endpoint + "/app-primitives")
@@ -251,7 +259,78 @@ def main() -> int:
             expect(unknown.returncode != 0 and "unknown process_id: proc-missing" in unknown.stderr, "unknown process_id fails with invalid-params style error", unknown.stderr)
             passed += 1
 
-            print(f"{passed}/13 checks pass")
+            # ------------------------------------------------------------------
+            # Checks 14-19: service.* and pkg.* families
+            # ------------------------------------------------------------------
+
+            # Check 14: service.status returns structured response (running/status/name)
+            # Use a safe service name that may not exist — we only verify shape, not value.
+            svc_status = parse_rpc_output(run_cmd([
+                str(pb_bin), "--endpoint", endpoint, "rpc", "service.status",
+                "--params", '{"name":"sshd"}',
+            ], check=False))
+            expect(
+                isinstance(svc_status.get("running"), bool)
+                and isinstance(svc_status.get("status"), str)
+                and svc_status.get("name") == "sshd",
+                "service.status returns structured response with name/running/status",
+                json.dumps(svc_status),
+            )
+            passed += 1
+
+            # Check 15: service.stop manifest declares rollback_endpoint="service.start"
+            svc_stop_manifest = by_name.get("service.stop", {})
+            expect(
+                svc_stop_manifest.get("rollback_endpoint") == "service.start",
+                'service.stop manifest has rollback_endpoint="service.start"',
+                json.dumps(svc_stop_manifest),
+            )
+            passed += 1
+
+            # Check 16: service.start manifest declares verify_endpoint="service.status"
+            svc_start_manifest = by_name.get("service.start", {})
+            expect(
+                svc_start_manifest.get("verify_endpoint") == "service.status",
+                'service.start manifest has verify_endpoint="service.status"',
+                json.dumps(svc_start_manifest),
+            )
+            passed += 1
+
+            # Check 17: pkg.list returns a packages array
+            pkg_list = parse_rpc_output(run_cmd([
+                str(pb_bin), "--endpoint", endpoint, "rpc", "pkg.list", "--params", "{}",
+            ]))
+            expect(
+                isinstance(pkg_list.get("packages"), list),
+                "pkg.list returns packages array",
+                json.dumps(pkg_list),
+            )
+            passed += 1
+
+            # Check 18: pkg.install manifest has checkpoint semantics
+            # (intent.category=mutation, reversible=false, risk_level=high)
+            pkg_install_manifest = by_name.get("pkg.install", {})
+            intent = pkg_install_manifest.get("intent", {})
+            expect(
+                intent.get("category") == "mutation"
+                and intent.get("reversible") is False
+                and intent.get("risk_level") == "high",
+                "pkg.install manifest: category=mutation, reversible=false, risk_level=high",
+                json.dumps(pkg_install_manifest),
+            )
+            passed += 1
+
+            # Check 19: pkg.install manifest has rollback_endpoint="pkg.remove"
+            #            and verify_endpoint="pkg.verify"
+            expect(
+                pkg_install_manifest.get("rollback_endpoint") == "pkg.remove"
+                and pkg_install_manifest.get("verify_endpoint") == "pkg.verify",
+                'pkg.install manifest has rollback_endpoint="pkg.remove" and verify_endpoint="pkg.verify"',
+                json.dumps(pkg_install_manifest),
+            )
+            passed += 1
+
+            print(f"{passed}/19 checks pass")
             return 0
         finally:
             if adapter_proc is not None and adapter_proc.poll() is None:

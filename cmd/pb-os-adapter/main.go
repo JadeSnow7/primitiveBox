@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -328,6 +329,212 @@ func buildManifestSet(appID, socketPath string) []primitive.AppPrimitiveManifest
 			SocketPath: socketPath,
 			Intent:     mutationHigh,
 		},
+		// -----------------------------------------------------------------
+		// service.* — system service lifecycle primitives
+		// -----------------------------------------------------------------
+		{
+			AppID:       appID,
+			Name:        "service.status",
+			Description: "Check whether a named system service is running (systemctl/launchctl).",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":    map[string]any{"type": "string"},
+					"running": map[string]any{"type": "boolean"},
+					"status":  map[string]any{"type": "string"},
+					"output":  map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "running", "status"},
+				"additionalProperties": false,
+			}),
+			SocketPath: socketPath,
+			Intent:     queryIntent,
+		},
+		{
+			AppID:       appID,
+			Name:        "service.start",
+			Description: "Start a named system service (systemctl/launchctl). Verifies via service.status.",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":    map[string]any{"type": "string"},
+					"started": map[string]any{"type": "boolean"},
+					"output":  map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "started"},
+				"additionalProperties": false,
+			}),
+			SocketPath:     socketPath,
+			Intent:         mutationMedium,
+			VerifyEndpoint: "service.status",
+		},
+		{
+			AppID:       appID,
+			Name:        "service.stop",
+			Description: "Stop a named system service (systemctl/launchctl). Rollback via service.start.",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":    map[string]any{"type": "string"},
+					"stopped": map[string]any{"type": "boolean"},
+					"output":  map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "stopped"},
+				"additionalProperties": false,
+			}),
+			SocketPath:       socketPath,
+			Intent:           mutationMedium,
+			RollbackEndpoint: "service.start",
+		},
+		{
+			AppID:       appID,
+			Name:        "service.restart",
+			Description: "Restart a named system service: stop then start with inline status verification.",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string"},
+					"restarted": map[string]any{"type": "boolean"},
+					"running":   map[string]any{"type": "boolean"},
+					"output":    map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "restarted", "running"},
+				"additionalProperties": false,
+			}),
+			SocketPath: socketPath,
+			Intent:     mutationMedium,
+		},
+		// -----------------------------------------------------------------
+		// pkg.* — system package management primitives
+		// -----------------------------------------------------------------
+		{
+			AppID:       appID,
+			Name:        "pkg.list",
+			Description: "List installed system packages (dpkg/brew list).",
+			InputSchema: mustJSON(map[string]any{"type": "object", "additionalProperties": false}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"packages": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+				},
+				"required":             []string{"packages"},
+				"additionalProperties": false,
+			}),
+			SocketPath: socketPath,
+			Intent:     queryIntent,
+		},
+		{
+			AppID:       appID,
+			Name:        "pkg.install",
+			Description: "Install a system package (apt-get/brew). Irreversible — CVR auto-checkpoints. Verify via pkg.verify; rollback via pkg.remove.",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string"},
+					"installed": map[string]any{"type": "boolean"},
+					"output":    map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "installed"},
+				"additionalProperties": false,
+			}),
+			SocketPath:       socketPath,
+			Intent:           mutationHigh,
+			VerifyEndpoint:   "pkg.verify",
+			RollbackEndpoint: "pkg.remove",
+		},
+		{
+			AppID:       appID,
+			Name:        "pkg.remove",
+			Description: "Remove a system package (apt-get/brew). High risk — escalation required.",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":    map[string]any{"type": "string"},
+					"removed": map[string]any{"type": "boolean"},
+					"output":  map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "removed"},
+				"additionalProperties": false,
+			}),
+			SocketPath: socketPath,
+			Intent:     mutationHigh,
+		},
+		{
+			AppID:       appID,
+			Name:        "pkg.verify",
+			Description: "Verify a package is correctly installed (dpkg --verify / brew list <name>).",
+			InputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			}),
+			OutputSchema: mustJSON(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":     map[string]any{"type": "string"},
+					"verified": map[string]any{"type": "boolean"},
+					"output":   map[string]any{"type": "string"},
+				},
+				"required":             []string{"name", "verified"},
+				"additionalProperties": false,
+			}),
+			SocketPath: socketPath,
+			Intent:     queryIntent,
+		},
 	}
 }
 
@@ -565,6 +772,15 @@ func serve(ctx context.Context, listener net.Listener, state *adapterState) erro
 
 func handleConn(ctx context.Context, conn net.Conn, state *adapterState) {
 	defer conn.Close()
+	var req appRPCRequest
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			_ = writeAppResponse(conn, appRPCResponse{
+				ID:    req.ID,
+				Error: &appRPCError{Code: -32603, Message: fmt.Sprintf("internal adapter error: %v", recovered)},
+			})
+		}
+	}()
 
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
@@ -575,7 +791,6 @@ func handleConn(ctx context.Context, conn net.Conn, state *adapterState) {
 		return
 	}
 
-	var req appRPCRequest
 	if err := json.Unmarshal(line, &req); err != nil {
 		_ = writeAppResponse(conn, appRPCResponse{
 			ID:    0,
@@ -667,6 +882,74 @@ func dispatch(ctx context.Context, state *adapterState, method string, raw json.
 		return handleSignalPrimitive(state.registry, raw, syscall.SIGTERM, "terminated")
 	case "process.kill":
 		return handleSignalPrimitive(state.registry, raw, syscall.SIGKILL, "killed")
+	case "service.status":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handleServiceStatus(ctx, strings.TrimSpace(in.Name))
+	case "service.start":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handleServiceAction(ctx, strings.TrimSpace(in.Name), "start")
+	case "service.stop":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handleServiceAction(ctx, strings.TrimSpace(in.Name), "stop")
+	case "service.restart":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handleServiceRestart(ctx, strings.TrimSpace(in.Name))
+	case "pkg.list":
+		if len(raw) == 0 {
+			raw = json.RawMessage("{}")
+		}
+		var in map[string]any
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return nil, invalidParams("invalid request")
+		}
+		if len(in) != 0 {
+			return nil, invalidParams("pkg.list accepts no parameters")
+		}
+		return handlePkgList(ctx)
+	case "pkg.install":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handlePkgInstall(ctx, strings.TrimSpace(in.Name))
+	case "pkg.remove":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handlePkgRemove(ctx, strings.TrimSpace(in.Name))
+	case "pkg.verify":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || strings.TrimSpace(in.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		return handlePkgVerify(ctx, strings.TrimSpace(in.Name))
 	default:
 		return nil, &appRPCError{Code: -32601, Message: "method not found: " + method}
 	}
@@ -729,6 +1012,189 @@ func signalName(sig syscall.Signal) string {
 	default:
 		return sig.String()
 	}
+}
+
+func isLinux() bool {
+	return runtime.GOOS == "linux"
+}
+
+// ---------------------------------------------------------------------------
+// service.* handlers
+// ---------------------------------------------------------------------------
+
+func handleServiceStatus(ctx context.Context, name string) (any, *appRPCError) {
+	var cmd *exec.Cmd
+	if isLinux() {
+		cmd = exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", name)
+		out, err := cmd.CombinedOutput()
+		running := err == nil
+		status := "stopped"
+		if running {
+			status = "active"
+		}
+		return map[string]any{
+			"name":    name,
+			"passed":  running,
+			"running": running,
+			"status":  status,
+			"output":  strings.TrimSpace(string(out)),
+		}, nil
+	}
+	// macOS: parse `brew services list`
+	listCmd := exec.CommandContext(ctx, "brew", "services", "list")
+	out, err := listCmd.CombinedOutput()
+	running := false
+	status := "stopped"
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == name {
+				running = fields[1] == "started"
+				status = fields[1]
+				break
+			}
+		}
+	}
+	return map[string]any{
+		"name":    name,
+		"passed":  running,
+		"running": running,
+		"status":  status,
+		"output":  strings.TrimSpace(string(out)),
+	}, nil
+}
+
+func handleServiceAction(ctx context.Context, name, action string) (any, *appRPCError) {
+	var cmd *exec.Cmd
+	if isLinux() {
+		cmd = exec.CommandContext(ctx, "systemctl", action, name)
+	} else {
+		cmd = exec.CommandContext(ctx, "brew", "services", action, name)
+	}
+	out, err := cmd.CombinedOutput()
+	resultKey := action + "ed"
+	switch action {
+	case "start":
+		resultKey = "started"
+	case "stop":
+		resultKey = "stopped"
+	}
+	return map[string]any{
+		"name":    name,
+		resultKey: err == nil,
+		"output":  strings.TrimSpace(string(out)),
+	}, nil
+}
+
+func handleServiceRestart(ctx context.Context, name string) (any, *appRPCError) {
+	var stopCmd, startCmd *exec.Cmd
+	if isLinux() {
+		stopCmd = exec.CommandContext(ctx, "systemctl", "stop", name)
+		startCmd = exec.CommandContext(ctx, "systemctl", "start", name)
+	} else {
+		stopCmd = exec.CommandContext(ctx, "brew", "services", "stop", name)
+		startCmd = exec.CommandContext(ctx, "brew", "services", "start", name)
+	}
+	stopOut, _ := stopCmd.CombinedOutput()
+	startOut, startErr := startCmd.CombinedOutput()
+
+	statusResult, _ := handleServiceStatus(ctx, name)
+	running := false
+	if m, ok := statusResult.(map[string]any); ok {
+		running, _ = m["running"].(bool)
+	}
+
+	combinedOutput := strings.TrimSpace(string(stopOut)) + "\n" + strings.TrimSpace(string(startOut))
+	return map[string]any{
+		"name":      name,
+		"restarted": startErr == nil,
+		"running":   running,
+		"output":    strings.TrimSpace(combinedOutput),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// pkg.* handlers
+// ---------------------------------------------------------------------------
+
+func handlePkgList(ctx context.Context) (any, *appRPCError) {
+	var cmd *exec.Cmd
+	if isLinux() {
+		cmd = exec.CommandContext(ctx, "dpkg", "--get-selections")
+	} else {
+		cmd = exec.CommandContext(ctx, "brew", "list", "--formula")
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, &appRPCError{Code: -32603, Message: "pkg.list failed: " + err.Error()}
+	}
+	var packages []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isLinux() {
+			// dpkg --get-selections format: "packagename\tinstall"
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[1] == "install" {
+				packages = append(packages, fields[0])
+			}
+		} else {
+			packages = append(packages, line)
+		}
+	}
+	if packages == nil {
+		packages = []string{}
+	}
+	return map[string]any{"packages": packages}, nil
+}
+
+func handlePkgInstall(ctx context.Context, name string) (any, *appRPCError) {
+	var cmd *exec.Cmd
+	if isLinux() {
+		cmd = exec.CommandContext(ctx, "apt-get", "install", "-y", name)
+	} else {
+		cmd = exec.CommandContext(ctx, "brew", "install", name)
+	}
+	out, err := cmd.CombinedOutput()
+	return map[string]any{
+		"name":      name,
+		"installed": err == nil,
+		"output":    strings.TrimSpace(string(out)),
+	}, nil
+}
+
+func handlePkgRemove(ctx context.Context, name string) (any, *appRPCError) {
+	var cmd *exec.Cmd
+	if isLinux() {
+		cmd = exec.CommandContext(ctx, "apt-get", "remove", "-y", name)
+	} else {
+		cmd = exec.CommandContext(ctx, "brew", "uninstall", name)
+	}
+	out, err := cmd.CombinedOutput()
+	return map[string]any{
+		"name":    name,
+		"removed": err == nil,
+		"output":  strings.TrimSpace(string(out)),
+	}, nil
+}
+
+func handlePkgVerify(ctx context.Context, name string) (any, *appRPCError) {
+	var cmd *exec.Cmd
+	if isLinux() {
+		cmd = exec.CommandContext(ctx, "dpkg", "--verify", name)
+	} else {
+		cmd = exec.CommandContext(ctx, "brew", "list", name)
+	}
+	out, err := cmd.CombinedOutput()
+	verified := err == nil
+	return map[string]any{
+		"name":     name,
+		"passed":   verified,
+		"verified": verified,
+		"output":   strings.TrimSpace(string(out)),
+	}, nil
 }
 
 func cloneIntPointer(value *int) *int {

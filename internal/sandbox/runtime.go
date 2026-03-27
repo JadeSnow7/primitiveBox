@@ -52,6 +52,14 @@ type Store interface {
 	ListExpired(ctx context.Context, before time.Time, limit int) ([]*Sandbox, error)
 }
 
+// PackageHydrator launches adapter packages when a sandbox boots.
+// The Manager calls Install once per entry in SandboxConfig.Packages after
+// the sandbox driver creates the sandbox. This interface decouples the sandbox
+// package from the pkgmgr package to avoid import cycles.
+type PackageHydrator interface {
+	Install(ctx context.Context, name string, extraArgs []string) error
+}
+
 // --------------------------------------------------------------------------
 // Sandbox Types
 // --------------------------------------------------------------------------
@@ -94,6 +102,13 @@ type SandboxConfig struct {
 
 	// Labels for identification and filtering
 	Labels map[string]string `json:"labels" yaml:"labels"`
+
+	// Packages lists adapter package names to hydrate when this sandbox is created.
+	// The control-plane manager will call the configured PackageHydrator for each
+	// name after the sandbox driver reports a successful Create. Code execution
+	// never happens during package installation — adapters are launched only here,
+	// at sandbox boot, by explicit agent invocation.
+	Packages []string `json:"packages,omitempty" yaml:"packages,omitempty"`
 }
 
 // Sandbox represents a running sandbox instance.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,6 +156,37 @@ func TestSandboxHealthProxyRequiresRunningSandbox(t *testing.T) {
 	}
 }
 
+func TestSandboxRPCProxyRecoversFromManagerPanic(t *testing.T) {
+	t.Parallel()
+
+	manager := sandbox.NewManagerWithRegistryDir(panicProxyDriver{}, t.TempDir())
+	if err := manager.CreatePlaceholder(&sandbox.Sandbox{
+		ID:           "sb-panic",
+		ContainerID:  "ctr-panic",
+		Status:       sandbox.StatusRunning,
+		HealthStatus: "healthy",
+		RPCEndpoint:  "http://sandbox.local",
+		RPCPort:      18080,
+	}); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+	server := NewServer(primitive.NewRegistry(), nil, manager)
+
+	body := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"fs.read","params":{"path":"main.txt"},"id":"req-panic"}`)
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes/sb-panic/rpc", body)
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != CodeInternalError {
+		t.Fatalf("expected structured panic recovery, got %+v", resp)
+	}
+}
+
 type proxyDriver struct {
 	statuses map[string]sandbox.SandboxStatus
 }
@@ -187,6 +219,26 @@ func (p proxyDriver) Status(ctx context.Context, sandboxID string) (sandbox.Sand
 }
 func (proxyDriver) Capabilities() []sandbox.RuntimeCapability { return nil }
 func (proxyDriver) Name() string                              { return "proxy" }
+
+type panicProxyDriver struct{}
+
+func (panicProxyDriver) Create(ctx context.Context, config sandbox.SandboxConfig) (*sandbox.Sandbox, error) {
+	return nil, errors.New("not implemented")
+}
+func (panicProxyDriver) Start(ctx context.Context, sandboxID string) error   { return nil }
+func (panicProxyDriver) Stop(ctx context.Context, sandboxID string) error    { return nil }
+func (panicProxyDriver) Destroy(ctx context.Context, sandboxID string) error { return nil }
+func (panicProxyDriver) Exec(ctx context.Context, sandboxID string, cmd sandbox.ExecCommand) (*sandbox.ExecResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (panicProxyDriver) Inspect(ctx context.Context, sandboxID string) (*sandbox.Sandbox, error) {
+	panic("inspect boom")
+}
+func (panicProxyDriver) Status(ctx context.Context, sandboxID string) (sandbox.SandboxStatus, error) {
+	panic("status boom")
+}
+func (panicProxyDriver) Capabilities() []sandbox.RuntimeCapability { return nil }
+func (panicProxyDriver) Name() string                              { return "panic-proxy" }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

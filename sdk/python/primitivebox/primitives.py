@@ -154,7 +154,7 @@ class CodePrimitives:
 
 
 class DBPrimitives:
-    """Read-only database primitives."""
+    """Database primitives."""
 
     def __init__(self, client):
         self._client = client
@@ -163,14 +163,35 @@ class DBPrimitives:
         """Inspect schema metadata for a sqlite or postgres connection."""
         return self._client.call("db.schema", {"connection": connection})
 
+    def query(self, connection: dict[str, Any], query: str, max_rows: int = 100) -> dict:
+        """Run a capped, read-only SQL query and return rows."""
+        return self._client.call(
+            "db.query",
+            {
+                "connection": connection,
+                "query": query,
+                "max_rows": max_rows,
+            },
+        )
+
     def query_readonly(self, connection: dict[str, Any], query: str, max_rows: int = 100) -> dict:
-        """Run a capped, read-only SQL query."""
+        """Backward-compatible wrapper returning the legacy readonly envelope."""
         return self._client.call(
             "db.query_readonly",
             {
                 "connection": connection,
                 "query": query,
                 "max_rows": max_rows,
+            },
+        )
+
+    def execute(self, connection: dict[str, Any], query: str) -> dict:
+        """Run a single SQL mutation statement (DDL/DML)."""
+        return self._client.call(
+            "db.execute",
+            {
+                "connection": connection,
+                "query": query,
             },
         )
 
@@ -182,11 +203,18 @@ class BrowserPrimitives:
         self._client = client
 
     def goto(self, url: str, session_id: str = "", timeout_s: int = 30) -> dict:
-        """Navigate to a URL and create or resume a browser session."""
+        """Navigate to a URL and return semantic markdown/text for the page."""
         params: dict[str, Any] = {"url": url, "timeout_s": timeout_s}
         if session_id:
             params["session_id"] = session_id
         return self._client.call("browser.goto", params)
+
+    def read(self, session_id: str, timeout_s: int = 10) -> dict:
+        """Read semantic markdown/text for the active page."""
+        return self._client.call(
+            "browser.read",
+            {"session_id": session_id, "timeout_s": timeout_s},
+        )
 
     def extract(self, session_id: str, selector: str) -> dict:
         """Extract text content from the current page."""

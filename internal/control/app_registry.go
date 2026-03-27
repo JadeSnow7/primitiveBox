@@ -96,15 +96,16 @@ func (r *SQLiteAppRegistry) Register(ctx context.Context, manifest primitive.App
 	now := time.Now().UTC().Unix()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO app_primitives (
-			name, app_id, description, input_schema_json, output_schema_json, socket_path,
+			name, app_id, description, input_schema_json, output_schema_json, ui_layout_hint, socket_path,
 			availability, verify_endpoint, verify_json, rollback_endpoint, rollback_json,
 			intent_json, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			app_id = excluded.app_id,
 			description = excluded.description,
 			input_schema_json = excluded.input_schema_json,
 			output_schema_json = excluded.output_schema_json,
+			ui_layout_hint = excluded.ui_layout_hint,
 			socket_path = excluded.socket_path,
 			availability = excluded.availability,
 			verify_endpoint = excluded.verify_endpoint,
@@ -114,7 +115,7 @@ func (r *SQLiteAppRegistry) Register(ctx context.Context, manifest primitive.App
 			intent_json = excluded.intent_json,
 			updated_at = excluded.updated_at
 	`, normalized.Name, normalized.AppID, normalized.Description, string(normalized.InputSchema), string(normalized.OutputSchema),
-		normalized.SocketPath, string(primitive.AppPrimitiveActive), normalized.VerifyEndpoint, string(verifyJSON),
+		normalized.UILayoutHint, normalized.SocketPath, string(primitive.AppPrimitiveActive), normalized.VerifyEndpoint, string(verifyJSON),
 		normalized.RollbackEndpoint, string(rollbackJSON), string(intentJSON), now); err != nil {
 		return fmt.Errorf("upsert app registration: %w", err)
 	}
@@ -150,7 +151,7 @@ func (r *SQLiteAppRegistry) Get(ctx context.Context, name string) (*primitive.Ap
 		return nil, fmt.Errorf("app registry unavailable")
 	}
 	row := r.store.db.QueryRowContext(ctx, `
-		SELECT app_id, name, description, input_schema_json, output_schema_json, socket_path,
+		SELECT app_id, name, description, input_schema_json, output_schema_json, ui_layout_hint, socket_path,
 		       availability, verify_endpoint, verify_json, rollback_endpoint, rollback_json,
 		       intent_json
 		FROM app_primitives
@@ -171,7 +172,7 @@ func (r *SQLiteAppRegistry) List(ctx context.Context) ([]primitive.AppPrimitiveM
 		return nil, fmt.Errorf("app registry unavailable")
 	}
 	rows, err := r.store.db.QueryContext(ctx, `
-		SELECT app_id, name, description, input_schema_json, output_schema_json, socket_path,
+		SELECT app_id, name, description, input_schema_json, output_schema_json, ui_layout_hint, socket_path,
 		       availability, verify_endpoint, verify_json, rollback_endpoint, rollback_json,
 		       intent_json
 		FROM app_primitives
@@ -205,7 +206,7 @@ func (r *SQLiteAppRegistry) MarkUnavailable(ctx context.Context, appID string) e
 	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT app_id, name, description, input_schema_json, output_schema_json, socket_path,
+		SELECT app_id, name, description, input_schema_json, output_schema_json, ui_layout_hint, socket_path,
 		       availability, verify_endpoint, verify_json, rollback_endpoint, rollback_json,
 		       intent_json
 		FROM app_primitives
@@ -275,6 +276,7 @@ func scanAppPrimitiveManifest(scan func(dest ...any) error) (*primitive.AppPrimi
 		description      string
 		inputSchemaJSON  string
 		outputSchemaJSON string
+		uiLayoutHint     string
 		socketPath       string
 		availability     string
 		verifyEndpoint   string
@@ -289,6 +291,7 @@ func scanAppPrimitiveManifest(scan func(dest ...any) error) (*primitive.AppPrimi
 		&description,
 		&inputSchemaJSON,
 		&outputSchemaJSON,
+		&uiLayoutHint,
 		&socketPath,
 		&availability,
 		&verifyEndpoint,
@@ -306,6 +309,7 @@ func scanAppPrimitiveManifest(scan func(dest ...any) error) (*primitive.AppPrimi
 		Description:      description,
 		InputSchema:      json.RawMessage(inputSchemaJSON),
 		OutputSchema:     json.RawMessage(outputSchemaJSON),
+		UILayoutHint:     uiLayoutHint,
 		SocketPath:       socketPath,
 		Availability:     primitive.AppPrimitiveAvailability(availability),
 		VerifyEndpoint:   verifyEndpoint,

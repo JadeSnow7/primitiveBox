@@ -10,6 +10,7 @@ build:
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-os-adapter ./cmd/pb-os-adapter/
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-test-adapter ./cmd/pb-test-adapter/
 	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-repo-adapter ./cmd/pb-repo-adapter/
+	GOCACHE=$(GO_BUILD_CACHE) go build -o bin/pb-data-adapter ./cmd/pb-data-adapter/
 
 run: build
 	./bin/pb server start --workspace .

@@ -30,21 +30,23 @@ func TestRPCStreamShellExecEmitsSSEFrames(t *testing.T) {
 	server := NewServer(registry, nil, nil)
 	server.AttachEventing(eventing.NewBus(store), store)
 
-	body := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"shell.exec","params":{"command":"printf 'hello\\n'"},"id":"stream-1"}`)
-	req := httptest.NewRequest(http.MethodPost, "/rpc/stream", body)
-	resp := httptest.NewRecorder()
+	for i := 0; i < 25; i++ {
+		body := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"shell.exec","params":{"command":"echo hello"},"id":"stream-1"}`)
+		req := httptest.NewRequest(http.MethodPost, "/rpc/stream", body)
+		resp := httptest.NewRecorder()
 
-	server.Handler().ServeHTTP(resp, req)
+		server.Handler().ServeHTTP(resp, req)
 
-	payload := resp.Body.String()
-	if !strings.Contains(payload, "event: started") {
-		t.Fatalf("expected started event, got %s", payload)
-	}
-	if !strings.Contains(payload, "event: stdout") {
-		t.Fatalf("expected stdout event, got %s", payload)
-	}
-	if !strings.Contains(payload, "event: completed") {
-		t.Fatalf("expected completed event, got %s", payload)
+		payload := resp.Body.String()
+		if !strings.Contains(payload, "event: started") {
+			t.Fatalf("iteration %d: expected started event, got %s", i, payload)
+		}
+		if !strings.Contains(payload, "event: stdout") {
+			t.Fatalf("iteration %d: expected stdout event, got %s", i, payload)
+		}
+		if !strings.Contains(payload, "event: completed") {
+			t.Fatalf("iteration %d: expected completed event, got %s", i, payload)
+		}
 	}
 }
 

@@ -134,16 +134,11 @@
       "required": ["stored", "key", "previous_exists"]
     },
     "socket_path": "/tmp/pb-kv.sock",
-<<<<<<< HEAD
     "verify_endpoint": "kv.verify",
-    "rollback_endpoint": "state.restore",
-=======
-    "verify_endpoint": "kv.get",
     "rollback": {
       "strategy": "primitive",
       "primitive": "kv.rollback_set"
     },
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
     "intent": {
       "category": "mutation",
       "reversible": true,

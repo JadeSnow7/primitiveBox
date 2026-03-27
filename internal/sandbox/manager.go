@@ -28,6 +28,7 @@ type Manager struct {
 	eventBus    *eventing.Bus
 	registryDir string
 	httpClient  *http.Client
+	hydrator    PackageHydrator
 
 	mu        sync.Mutex
 	snapshots map[string]*SnapshotManager
@@ -38,6 +39,9 @@ type ManagerOptions struct {
 	Store       Store
 	EventBus    *eventing.Bus
 	RegistryDir string
+	// Hydrator, if set, is invoked during Create to launch adapters for each
+	// package name listed in SandboxConfig.Packages.
+	Hydrator PackageHydrator
 }
 
 type legacyRegistryImporter interface {
@@ -66,6 +70,7 @@ func NewManagerWithOptions(driver RuntimeDriver, options ManagerOptions) *Manage
 		store:       options.Store,
 		eventBus:    options.EventBus,
 		registryDir: options.RegistryDir,
+		hydrator:    options.Hydrator,
 		httpClient: &http.Client{
 			Timeout: 3 * time.Second,
 		},
@@ -134,6 +139,19 @@ func (m *Manager) Create(ctx context.Context, config SandboxConfig) (*Sandbox, e
 		Message:   "sandbox metadata created",
 		Data:      eventing.MustJSON(sandbox),
 	})
+
+	// Hydrate declared adapter packages. Each adapter is launched by the
+	// control-plane installer so its Unix socket is ready before the caller
+	// returns. Failures are non-fatal and logged — a missing package adapter
+	// should not prevent the sandbox from being created.
+	if m.hydrator != nil {
+		for _, pkgName := range config.Packages {
+			if err := m.hydrator.Install(ctx, pkgName, nil); err != nil {
+				fmt.Printf("[sandbox] Warning: hydrate package %q for sandbox %s: %v\n", pkgName, sandbox.ID, err)
+			}
+		}
+	}
+
 	return cloneSandbox(sandbox), nil
 }
 

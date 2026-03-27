@@ -5,6 +5,7 @@ import { AppPrimitivePage } from '@/pages/AppPrimitivePage'
 import { PrimitivePage } from '@/pages/PrimitivePage'
 import { TracePage } from '@/pages/TracePage'
 import { WorkspacePage } from '@/pages/WorkspacePage'
+import { usePrimitiveStore } from '@/store/primitiveStore'
 import { useSandboxStore } from '@/store/sandboxStore'
 import { useUIStore } from '@/store/uiStore'
 
@@ -13,6 +14,7 @@ type View = 'trace' | 'primitives' | 'app-primitives' | 'workspace'
 export default function App() {
   const [view, setView] = useState<View>('trace')
   const loadSandboxes = useSandboxStore((s) => s.load)
+  const loadPrimitiveCatalog = usePrimitiveStore((s) => s.load)
   const refreshSelected = useSandboxStore((s) => s.refreshSelected)
   const setGatewayStatus = useUIStore((s) => s.setGatewayStatus)
 
@@ -23,6 +25,10 @@ export default function App() {
   useEffect(() => {
     void refreshSelected()
   }, [refreshSelected])
+
+  useEffect(() => {
+    void loadPrimitiveCatalog()
+  }, [loadPrimitiveCatalog])
 
   useEffect(() => {
     let active = true

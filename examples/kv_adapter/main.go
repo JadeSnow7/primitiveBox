@@ -1170,6 +1170,12 @@ func (a *kvAdapter) handleImport(ctx context.Context, raw json.RawMessage) (any,
 }
 
 func (a *kvAdapter) handleVerify(ctx context.Context, raw json.RawMessage) (any, *appRPCError) {
+	var verifyHint struct {
+		VerifyControl verifyControl `json:"verify_control,omitempty"`
+	}
+	if err := decodeParams(raw, &verifyHint); err != nil {
+		return nil, err
+	}
 	var params verifyParams
 	if err := decodeParams(raw, &params); err != nil {
 		return nil, err
@@ -1188,7 +1194,16 @@ func (a *kvAdapter) handleVerify(ctx context.Context, raw json.RawMessage) (any,
 		consistent = false
 		problems = append(problems, fmt.Sprintf("expected_count=%d actual=%d", *params.ExpectedCount, len(entries)))
 	}
+	if verifyHint.VerifyControl.ForceFail {
+		consistent = false
+		message := strings.TrimSpace(verifyHint.VerifyControl.Message)
+		if message == "" {
+			message = "verify_control forced failure"
+		}
+		problems = append(problems, message)
+	}
 	return map[string]any{
+		"passed":      consistent,
 		"consistent":  consistent,
 		"entry_count": len(entries),
 		"checksum":    checksum,

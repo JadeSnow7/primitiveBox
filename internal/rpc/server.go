@@ -16,6 +16,7 @@ import (
 	pathpkg "path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primitivebox/internal/audit"
@@ -256,7 +257,10 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 		return
 	}
 
-	var sinks []eventing.Sink
+	var (
+		sinks        []eventing.Sink
+		streamWriter *sseWriter
+	)
 	if s.eventBus != nil {
 		sinks = append(sinks, eventing.SinkFunc(func(ctx context.Context, evt eventing.Event) {
 			if evt.Method == "" {
@@ -272,8 +276,9 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			return
 		}
 		setSSEHeaders(w)
-		sinks = append(sinks, streamSink{writer: w, method: req.Method})
-		s.writeStreamEvent(w, "started", map[string]any{
+		streamWriter = &sseWriter{writer: w}
+		sinks = append(sinks, streamSink{writer: streamWriter, method: req.Method})
+		streamWriter.WriteEvent("started", map[string]any{
 			"method": req.Method,
 			"id":     req.ID,
 		})
@@ -337,7 +342,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			s.publishTraceStep(ctx, traceRecord)
 		}
 		if stream {
-			s.writeStreamEvent(w, "error", map[string]any{
+			streamWriter.WriteEvent("error", map[string]any{
 				"method":  req.Method,
 				"message": err.Error(),
 			})
@@ -354,7 +359,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			}
 			s.publishTraceStep(ctx, traceRecord)
 		}
-		s.writeStreamEvent(w, "completed", map[string]any{
+		streamWriter.WriteEvent("completed", map[string]any{
 			"method":      req.Method,
 			"result":      result,
 			"duration_ms": duration.Milliseconds(),
@@ -540,6 +545,31 @@ func (s *Server) handleSandboxHealth(w http.ResponseWriter, r *http.Request, san
 }
 
 func (s *Server) proxySandboxRequest(w http.ResponseWriter, r *http.Request, sandboxID, targetPath, auditMethod string) {
+	var proxiedRequest *Request
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[RPC] Recovered from sandbox proxy panic in %s: %v", targetPath, recovered)
+			switch targetPath {
+			case "/rpc":
+				requestID := any(nil)
+				if proxiedRequest != nil {
+					requestID = proxiedRequest.ID
+				}
+				s.writeResponse(w, Response{
+					JSONRPC: "2.0",
+					Error: &Error{
+						Code:    CodeInternalError,
+						Message: "internal server error",
+						Data:    fmt.Sprintf("panic while proxying sandbox RPC for %s", sandboxID),
+					},
+					ID: requestID,
+				})
+			default:
+				http.Error(w, fmt.Sprintf("sandbox proxy panic: %v", recovered), http.StatusBadGateway)
+			}
+		}
+	}()
+
 	sb, err := s.manager.Inspect(r.Context(), sandboxID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -559,7 +589,7 @@ func (s *Server) proxySandboxRequest(w http.ResponseWriter, r *http.Request, san
 	if r.Body != nil {
 		body, _ = io.ReadAll(r.Body)
 	}
-	proxiedRequest := decodeRPCRequest(body)
+	proxiedRequest = decodeRPCRequest(body)
 	if s.eventBus != nil && proxiedRequest != nil {
 		s.eventBus.Publish(r.Context(), eventing.Event{
 			Type:      "rpc.started",
@@ -651,6 +681,20 @@ func (s *Server) proxySandboxRequest(w http.ResponseWriter, r *http.Request, san
 }
 
 func (s *Server) proxySandboxStreamRequest(w http.ResponseWriter, r *http.Request, sandboxID string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[RPC] Recovered from sandbox stream proxy panic: %v", recovered)
+			if supportsStreaming(w) {
+				setSSEHeaders(w)
+				s.writeStreamEvent(w, "error", map[string]any{
+					"message": fmt.Sprintf("panic while proxying sandbox stream for %s", sandboxID),
+				})
+				return
+			}
+			http.Error(w, "sandbox stream proxy panic", http.StatusBadGateway)
+		}
+	}()
+
 	sb, err := s.manager.Inspect(r.Context(), sandboxID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -756,6 +800,7 @@ func appManifestSchema(manifest primitive.AppPrimitiveManifest) primitive.Schema
 	if idx := strings.IndexByte(manifest.Name, '.'); idx > 0 {
 		namespace = manifest.Name[:idx]
 	}
+	sideEffect := appManifestSideEffect(manifest.Intent.Category)
 	return primitive.Schema{
 		Name:         manifest.Name,
 		Namespace:    namespace,
@@ -764,10 +809,32 @@ func appManifestSchema(manifest primitive.AppPrimitiveManifest) primitive.Schema
 		Output:       manifest.OutputSchema,
 		InputSchema:  manifest.InputSchema,
 		OutputSchema: manifest.OutputSchema,
-		SideEffect:   string(manifest.Intent.Category),
+		SideEffect:   sideEffect,
+		UILayoutHint: manifest.UILayoutHint,
 		Source:       "app",
 		Adapter:      manifest.AppID,
 		Status:       string(manifest.Availability),
+		Intent: primitive.IntentMetadata{
+			Category:   manifest.Intent.Category,
+			SideEffect: sideEffect,
+			Reversible: manifest.Intent.Reversible,
+			RiskLevel:  manifest.Intent.RiskLevel,
+		},
+	}
+}
+
+func appManifestSideEffect(category any) string {
+	switch fmt.Sprint(category) {
+	case "query":
+		return primitive.SideEffectRead
+	case "verification":
+		return primitive.SideEffectExec
+	case "rollback":
+		return primitive.SideEffectWrite
+	case "mutation":
+		return "external"
+	default:
+		return "external"
 	}
 }
 
@@ -1255,7 +1322,7 @@ func writeSSEEvent(w http.ResponseWriter, name string, payload any) {
 }
 
 type streamSink struct {
-	writer http.ResponseWriter
+	writer *sseWriter
 	method string
 }
 
@@ -1298,7 +1365,18 @@ func (s streamSink) Emit(ctx context.Context, evt eventing.Event) {
 	if evt.Data != nil {
 		data["data"] = json.RawMessage(evt.Data)
 	}
-	writeSSEEvent(s.writer, name, data)
+	s.writer.WriteEvent(name, data)
+}
+
+type sseWriter struct {
+	writer http.ResponseWriter
+	mu     sync.Mutex
+}
+
+func (w *sseWriter) WriteEvent(name string, payload any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	writeSSEEvent(w.writer, name, payload)
 }
 
 func supportsStreaming(w http.ResponseWriter) bool {

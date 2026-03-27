@@ -1,6 +1,14 @@
 import { callPrimitive } from '@/api/primitives'
 import { mapExecutionResultToUI } from '@/lib/executionMapper'
-import { getWorkspacePanels } from '@/store/workspaceStore'
+import { resolveExecutionEntities } from '@/lib/entityTracker'
+import {
+  PrimitiveCatalogUnavailableError,
+  requiresHumanReview,
+  resolvePrimitiveIntent,
+} from '@/lib/primitiveIntent'
+import { useOrchestratorStore } from '@/store/orchestratorStore'
+import { getWorkspacePanels, upsertWorkspaceEntities } from '@/store/workspaceStore'
+import { getTimelineEntries } from '@/store/timelineStore'
 import type { OrchestratorOutput, UIPrimitive } from '@/types/workspace'
 import type { TimelineState } from '@/store/timelineStore'
 
@@ -23,6 +31,70 @@ export interface ExecutionOutcome {
 
 export interface DispatchResult {
   outcomes: ExecutionOutcome[]
+}
+
+const HIGH_RISK_METHODS = new Set<string>([
+  'fs.write',
+  'shell.exec',
+  'verify.test',
+  'db.execute',
+])
+
+function makeSyntheticCallId(prefix: string, groupId: string): string {
+  return `${prefix}-${groupId}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function extractCheckpointID(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') return undefined
+  const checkpointId = (result as Record<string, unknown>)['checkpoint_id']
+  return typeof checkpointId === 'string' && checkpointId.length > 0 ? checkpointId : undefined
+}
+
+function findLatestCheckpointID(entries: ReturnType<typeof getTimelineEntries>): string | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (entry.kind !== 'execution.result' || entry.method !== 'state.checkpoint') continue
+    const checkpointId = extractCheckpointID(entry.result)
+    if (checkpointId) return checkpointId
+  }
+  return undefined
+}
+
+function normalizeExecutionCalls(
+  output: OrchestratorOutput,
+  existingEntries: ReturnType<typeof getTimelineEntries>,
+) {
+  const execution = output.execution ?? []
+  const normalized = [...execution]
+  const hasCheckpoint = normalized.some((call) => call.method === 'state.checkpoint')
+  const needsCheckpoint = normalized.some((call) => HIGH_RISK_METHODS.has(call.method))
+
+  if (needsCheckpoint && !hasCheckpoint) {
+    normalized.unshift({
+      id: makeSyntheticCallId('auto-checkpoint', output.groupId),
+      method: 'state.checkpoint',
+      params: {
+        label: `auto:${output.groupId}`,
+      },
+    })
+  }
+
+  const latestCheckpointId = findLatestCheckpointID(existingEntries)
+
+  return normalized.map((call) => {
+    if (call.method !== 'state.restore') return call
+    if (typeof call.params['checkpoint_id'] === 'string' && call.params['checkpoint_id']) {
+      return call
+    }
+    if (!latestCheckpointId) return call
+    return {
+      ...call,
+      params: {
+        ...call.params,
+        checkpoint_id: latestCheckpointId,
+      },
+    }
+  })
 }
 
 // ─── Dedup helper ─────────────────────────────────────────────────────────────
@@ -52,14 +124,16 @@ function isPanelAlreadyOpen(executionId: string): boolean {
  * iteration's context from real execution results.
  *
  * All entries share the same `groupId` for causal tracing.
+ * call/result/skipped entries share `correlationId = call.id` for replay correlation.
  */
 export async function dispatchOrchestratorOutput(
   output: OrchestratorOutput,
   opts: DispatchOptions,
 ): Promise<DispatchResult> {
-  const { groupId, plan = [], execution = [], ui = [] } = output
+  const { groupId, plan = [], ui = [] } = output
   const { workspaceDispatch, appendTimeline, sandboxId } = opts
   const outcomes: ExecutionOutcome[] = []
+  const execution = normalizeExecutionCalls(output, getTimelineEntries())
 
   // ── Plan path (always first — records AI reasoning before any side effects) ─
   if (plan.length > 0) {
@@ -67,51 +141,129 @@ export async function dispatchOrchestratorOutput(
       kind: 'plan',
       groupId,
       steps: plan,
-    } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
+    })
   }
 
   for (const call of execution) {
+    // correlationId ties timeline.call ↔ timeline.result for replay
+    const correlationId = call.id
+
     // Record the intent to execute
     appendTimeline({
       kind: 'execution.call',
       groupId,
+      correlationId,
       method: call.method,
       params: call.params,
-    } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
+    })
+
+    let intent
+    try {
+      intent = resolvePrimitiveIntent(call.method)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Primitive catalog unavailable'
+      appendTimeline({
+        kind: 'execution.skipped',
+        groupId,
+        correlationId,
+        method: call.method,
+        params: call.params,
+        reason: 'validation_failed',
+        message,
+      })
+      outcomes.push({ method: call.method, params: call.params, error: message })
+      if (error instanceof PrimitiveCatalogUnavailableError) {
+        throw error
+      }
+      throw new PrimitiveCatalogUnavailableError(message)
+    }
+
+    if (requiresHumanReview(call.method)) {
+      appendTimeline({
+        kind: 'execution.pending_review',
+        groupId,
+        correlationId,
+        method: call.method,
+        params: call.params,
+        risk_level: intent.risk_level,
+        reversible: intent.reversible,
+        side_effect: intent.side_effect,
+      })
+
+      const decision = await useOrchestratorStore.getState().requestReview({
+        groupId,
+        correlationId,
+        method: call.method,
+        params: call.params,
+        intent,
+      })
+
+      if (decision === 'rejected') {
+        const message = `Execution completely REJECTED by Human Reviewer. Re-evaluate your plan.`
+        appendTimeline({
+          kind: 'execution.rejected',
+          groupId,
+          correlationId,
+          method: call.method,
+          params: call.params,
+          decision,
+          reason: message,
+        })
+        outcomes.push({
+          method: call.method,
+          params: call.params,
+          error: message,
+        })
+        continue
+      }
+    }
 
     if (!sandboxId) {
       // Explicit skip — never silently stub
       appendTimeline({
         kind: 'execution.skipped',
         groupId,
+        correlationId,
         method: call.method,
         params: call.params,
-        reason: 'no active sandbox',
-      } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
+        reason: 'no_sandbox',
+      })
       outcomes.push({ method: call.method, params: call.params, skipped: true })
       continue
     }
 
     try {
       const result = await callPrimitive(sandboxId, call.method, call.params)
+      const resolvedEntities = resolveExecutionEntities(call.method, call.params, result, correlationId)
+      if (resolvedEntities.length > 0) {
+        upsertWorkspaceEntities(resolvedEntities)
+      }
+      const entityIds = resolvedEntities.map((entity) => entity.id)
 
-      // Record the raw result
+      // Record the raw result — keep method for readability; correlationId links back to call
       appendTimeline({
         kind: 'execution.result',
         groupId,
+        correlationId,
         method: call.method,
-        params: call.params,
         result,
-      } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
+        ...(entityIds.length > 0 ? { entityIds } : {}),
+      })
 
       outcomes.push({ method: call.method, params: call.params, result })
 
       // ── Execution → UI auto-mapping ────────────────────────────────────────
-      const mapped = mapExecutionResultToUI(call.method, call.params, result, call.id)
+      const mapped = mapExecutionResultToUI(
+        call.method,
+        call.params,
+        result,
+        correlationId,
+        resolvedEntities,
+      )
 
       if (mapped.length > 0) {
         // Dedup: skip if a panel for this execution result is already open.
-        if (!isPanelAlreadyOpen(call.id)) {
+        if (!isPanelAlreadyOpen(correlationId)) {
           workspaceDispatch(mapped)
 
           // Record each auto-generated primitive as a ui entry (same groupId →
@@ -122,20 +274,22 @@ export async function dispatchOrchestratorOutput(
               groupId,
               method: primitive.method,
               params: primitive.params,
-            } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
+            })
           }
         }
       }
     } catch (err) {
-      const error = err instanceof Error ? err.message : 'unknown error'
+      const message = err instanceof Error ? err.message : 'unknown error'
       appendTimeline({
         kind: 'execution.skipped',
         groupId,
+        correlationId,
         method: call.method,
         params: call.params,
-        reason: error,
-      } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
-      outcomes.push({ method: call.method, params: call.params, error })
+        reason: 'unsupported',
+        message,
+      })
+      outcomes.push({ method: call.method, params: call.params, error: message })
     }
   }
 
@@ -151,7 +305,7 @@ export async function dispatchOrchestratorOutput(
         groupId,
         method: primitive.method,
         params: primitive.params,
-      } as Omit<Parameters<TimelineState['append']>[0], 'id' | 'ts'>)
+      })
     }
   }
 

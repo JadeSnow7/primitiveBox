@@ -38,6 +38,8 @@ export interface VerificationContext {
   executorPlan: Array<{ step: string; reason: string }>
   /** The Executor's own confidence score (0–1). */
   executorConfidence?: number
+  /** The Executor's status ('done' or 'continue'). */
+  executorStatus?: 'done' | 'continue'
 }
 
 // ─── Local fallback ───────────────────────────────────────────────────────────
@@ -100,6 +102,7 @@ function localVerify(goal: string, ctx: VerificationContext): VerificationResult
       ? `Local verifier found structural evidence: ${hasResults ? 'execution results present' : ''}, ${hasDiff ? 'diff verified' : ''}`.trim()
       : `Local verifier found issues: ${missing.join('; ')}`,
     missing,
+    recommendedNext: [], // Local fallback does not recommend
   }
 }
 
@@ -113,19 +116,20 @@ async function llmVerify(
 ): Promise<VerificationResult> {
   const userMessage = JSON.stringify({
     userGoal: ctx.userGoal,
-    lastExecutionResults: ctx.lastOutcomes.map((o) => ({
+    latestExecution: ctx.lastOutcomes.map((o) => ({
       method: o.method,
       result: o.result,
       error: o.error,
       skipped: o.skipped,
     })),
-    uiState: ctx.uiState,
-    recentTimeline: ctx.recentTimeline.slice(-20).map((e) => ({
+    latestUI: ctx.uiState,
+    timelineSummary: ctx.recentTimeline.slice(-20).map((e) => ({
       kind: e.kind,
       method: 'method' in e ? e.method : undefined,
     })),
-    executorPlan: ctx.executorPlan,
-    executorConfidence: ctx.executorConfidence,
+    latestPlan: ctx.executorPlan,
+    agentStatus: ctx.executorStatus || 'done',
+    agentConfidence: ctx.executorConfidence,
   })
 
   const res = await fetch(`${endpoint}/chat/completions`, {
@@ -173,11 +177,18 @@ function validateVerificationResult(raw: unknown): VerificationResult {
   if (typeof o['confidence'] !== 'number') throw new Error('confidence must be number')
   if (typeof o['reason'] !== 'string') throw new Error('reason must be string')
   if (!Array.isArray(o['missing'])) throw new Error('missing must be array')
+  if (o['recommendedNext'] !== undefined && !Array.isArray(o['recommendedNext'])) {
+    throw new Error('recommendedNext must be array if provided')
+  }
+
   return {
     verified: o['verified'],
     confidence: Math.min(1, Math.max(0, o['confidence'])),
     reason: o['reason'],
     missing: (o['missing'] as unknown[]).filter((m): m is string => typeof m === 'string'),
+    recommendedNext: Array.isArray(o['recommendedNext'])
+      ? (o['recommendedNext'] as unknown[]).filter((m): m is string => typeof m === 'string')
+      : [],
   }
 }
 

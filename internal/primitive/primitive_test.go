@@ -141,6 +141,24 @@ func TestShellExecReturnsTimeoutResult(t *testing.T) {
 	}
 }
 
+func TestShellExecCapturesStdoutForFastCommand(t *testing.T) {
+	t.Parallel()
+
+	result, err := NewShellExec(t.TempDir(), Options{
+		DefaultTimeout: 1,
+	}).Execute(context.Background(), mustJSON(t, map[string]any{
+		"command": "echo hello",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data := decodeResult[shellExecResult](t, result)
+	if data.Stdout != "hello" {
+		t.Fatalf("expected stdout hello, got %+v", data)
+	}
+}
+
 func TestVerifyTestSharesShellPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -171,6 +189,17 @@ func TestRegistrySchemasExposeEnrichedMetadataAndCompatibilityAlias(t *testing.T
 	}
 	if len(fsWrite.InputSchema) == 0 || len(fsWrite.Input) == 0 {
 		t.Fatalf("expected backward-compatible and canonical input schemas")
+	}
+
+	stateCheckpoint, ok := registry.Schema("state.checkpoint")
+	if !ok {
+		t.Fatalf("expected state.checkpoint schema")
+	}
+	if stateCheckpoint.Intent.RiskLevel != "low" {
+		t.Fatalf("expected state.checkpoint low risk intent, got %+v", stateCheckpoint.Intent)
+	}
+	if !stateCheckpoint.Intent.Reversible {
+		t.Fatalf("expected state.checkpoint to remain reversible, got %+v", stateCheckpoint.Intent)
 	}
 
 	if _, ok := registry.Schema("test.run"); !ok {

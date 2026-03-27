@@ -25,12 +25,18 @@ function validatePrimitive(raw: unknown): ValidatedUIPrimitive | null {
   switch (p['method']) {
     case 'ui.panel.open': {
       if (!isValidPanelType(ps['type'])) return null
+      const entityId = typeof ps['entityId'] === 'string' ? ps['entityId'] : undefined
+      const entityIds = Array.isArray(ps['entityIds'])
+        ? ps['entityIds'].filter((id): id is string => typeof id === 'string')
+        : undefined
       return {
         method: 'ui.panel.open',
         params: {
           type: ps['type'],
           props: (typeof ps['props'] === 'object' && ps['props'] !== null ? ps['props'] : {}) as Record<string, unknown>,
           target: ps['target'] ? validateSemanticRef(ps['target']) ?? undefined : undefined,
+          ...(entityId ? { entityId } : {}),
+          ...(entityIds && entityIds.length > 0 ? { entityIds } : {}),
         },
       }
     }
@@ -98,12 +104,24 @@ function validatePlan(raw: unknown): PlanStep[] | string {
 
 // ─── ExecutionCall validator ──────────────────────────────────────────────────
 
-function validateExecutionCall(raw: unknown, index: number): ExecutionCall | string {
+/**
+ * @param appMethods - Optional set of app-registered primitive names from the
+ * live catalog (e.g., 'data.insert', 'data.query'). These are accepted in
+ * addition to the static EXECUTION_METHODS allowlist so the orchestrator can
+ * dispatch app primitives installed via Boxfile packages.
+ */
+function validateExecutionCall(
+  raw: unknown,
+  index: number,
+  appMethods?: ReadonlySet<string>,
+): ExecutionCall | string {
   if (!raw || typeof raw !== 'object') return `execution[${index}]: not an object`
   const e = raw as Record<string, unknown>
   if (typeof e['id'] !== 'string' || !e['id']) return `execution[${index}]: missing id`
   if (typeof e['method'] !== 'string') return `execution[${index}]: missing method`
-  if (!(EXECUTION_METHODS as readonly string[]).includes(e['method'])) {
+  const isBuiltin = (EXECUTION_METHODS as readonly string[]).includes(e['method'])
+  const isAppMethod = appMethods?.has(e['method']) ?? false
+  if (!isBuiltin && !isAppMethod) {
     return `execution[${index}]: unknown method "${e['method']}". Allowed: ${EXECUTION_METHODS.join(', ')}`
   }
   if (!e['params'] || typeof e['params'] !== 'object') return `execution[${index}]: params must be object`
@@ -120,8 +138,14 @@ function validateExecutionCall(raw: unknown, index: number): ExecutionCall | str
  * Accepts both:
  *   - `{ groupId, plan?, execution?, ui? }` — the canonical orchestrator output
  *   - `UIPrimitive[]`                       — backward compat flat array
+ *
+ * @param appMethods - Optional set of app-registered primitive names to allow
+ * through the execution method gate (built from the live primitive catalog).
  */
-export function validateOrchestratorOutput(raw: unknown): ValidationResult<OrchestratorOutput> {
+export function validateOrchestratorOutput(
+  raw: unknown,
+  appMethods?: ReadonlySet<string>,
+): ValidationResult<OrchestratorOutput> {
   // Backward compat: flat array → ui-only output
   if (Array.isArray(raw)) {
     const uiResult = validateUIPrimitives(raw)
@@ -157,7 +181,7 @@ export function validateOrchestratorOutput(raw: unknown): ValidationResult<Orche
     }
     execution = []
     for (let i = 0; i < o['execution'].length; i++) {
-      const result = validateExecutionCall(o['execution'][i], i)
+      const result = validateExecutionCall(o['execution'][i], i, appMethods)
       if (typeof result === 'string') return { success: false, error: result }
       execution.push(result)
     }

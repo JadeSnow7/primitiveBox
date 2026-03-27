@@ -5,6 +5,8 @@ package primitive
 import (
 	"context"
 	"encoding/json"
+
+	"primitivebox/internal/cvr"
 )
 
 // --------------------------------------------------------------------------
@@ -47,9 +49,18 @@ type Schema struct {
 	TimeoutMs          int             `json:"timeout_ms,omitempty"`
 	Scope              string          `json:"scope,omitempty"`
 	VerifierHint       string          `json:"verifier_hint,omitempty"`
+	UILayoutHint       string          `json:"ui_layout_hint,omitempty"`
 	Source             string          `json:"source,omitempty"`
 	Adapter            string          `json:"adapter,omitempty"`
 	Status             string          `json:"status,omitempty"`
+	Intent             IntentMetadata  `json:"intent"`
+}
+
+type IntentMetadata struct {
+	Category   cvr.IntentCategory `json:"category"`
+	SideEffect string             `json:"side_effect"`
+	Reversible bool               `json:"reversible"`
+	RiskLevel  cvr.RiskLevel      `json:"risk_level"`
 }
 
 // Result wraps the structured output of a primitive execution.
