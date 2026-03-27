@@ -153,12 +153,20 @@ func (s *ShellExec) Execute(ctx context.Context, params json.RawMessage) (Result
 
 	var stdout, stderr bytes.Buffer
 	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
 	wg.Add(2)
-	go streamPipe(ctx, &wg, "stdout", stdoutPipe, &stdout, s.Name())
-	go streamPipe(ctx, &wg, "stderr", stderrPipe, &stderr, s.Name())
+	go streamPipe(ctx, &wg, "stdout", stdoutPipe, &stdout, s.Name(), errCh)
+	go streamPipe(ctx, &wg, "stderr", stderrPipe, &stderr, s.Name(), errCh)
+
+	wg.Wait()
+	close(errCh)
+	for scanErr := range errCh {
+		if scanErr != nil {
+			return Result{}, &PrimitiveError{Code: ErrExecution, Message: scanErr.Error()}
+		}
+	}
 
 	err = cmd.Wait()
-	wg.Wait()
 	duration := time.Since(start)
 
 	exitCode := 0
@@ -205,7 +213,7 @@ func truncateOutput(s string, maxLen int) string {
 	return s[:half] + "\n... [truncated] ...\n" + s[len(s)-half:]
 }
 
-func streamPipe(ctx context.Context, wg *sync.WaitGroup, stream string, reader io.Reader, dest *bytes.Buffer, method string) {
+func streamPipe(ctx context.Context, wg *sync.WaitGroup, stream string, reader io.Reader, dest *bytes.Buffer, method string, errCh chan<- error) {
 	defer wg.Done()
 
 	scanner := bufio.NewScanner(reader)
@@ -227,4 +235,5 @@ func streamPipe(ctx context.Context, wg *sync.WaitGroup, stream string, reader i
 			}),
 		})
 	}
+	errCh <- scanner.Err()
 }

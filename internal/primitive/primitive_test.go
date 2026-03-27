@@ -141,6 +141,24 @@ func TestShellExecReturnsTimeoutResult(t *testing.T) {
 	}
 }
 
+func TestShellExecCapturesStdoutForFastCommand(t *testing.T) {
+	t.Parallel()
+
+	result, err := NewShellExec(t.TempDir(), Options{
+		DefaultTimeout: 1,
+	}).Execute(context.Background(), mustJSON(t, map[string]any{
+		"command": "echo hello",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data := decodeResult[shellExecResult](t, result)
+	if data.Stdout != "hello" {
+		t.Fatalf("expected stdout hello, got %+v", data)
+	}
+}
+
 func TestVerifyTestSharesShellPolicy(t *testing.T) {
 	t.Parallel()
 
