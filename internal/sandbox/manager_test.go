@@ -194,3 +194,67 @@ func TestManagerTouchAndReapExpired(t *testing.T) {
 		t.Fatalf("expected sandbox %s to be deleted", sb.ID)
 	}
 }
+
+// fakePackageHydrator records Install calls for assertion in tests.
+type fakePackageHydrator struct {
+	installed []string
+}
+
+func (h *fakePackageHydrator) Install(_ context.Context, name string, _ []string) error {
+	h.installed = append(h.installed, name)
+	return nil
+}
+
+func TestManagerCreate_HydratesPackages(t *testing.T) {
+	t.Parallel()
+
+	hydrator := &fakePackageHydrator{}
+	driver := &fakeRuntimeDriver{
+		createSandbox: &Sandbox{
+			ID:          "sb-hydrate",
+			Status:      StatusStopped,
+			RPCEndpoint: "http://127.0.0.1:19080",
+		},
+	}
+
+	manager := NewManagerWithOptions(driver, ManagerOptions{
+		Store:    NewMemoryStore(),
+		Hydrator: hydrator,
+	})
+
+	_, err := manager.Create(context.Background(), SandboxConfig{
+		Image:    "primitivebox-sandbox:latest",
+		Packages: []string{"os", "mcp-bridge"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if len(hydrator.installed) != 2 {
+		t.Fatalf("expected 2 hydration calls, got %d: %v", len(hydrator.installed), hydrator.installed)
+	}
+	if hydrator.installed[0] != "os" {
+		t.Errorf("hydrator.installed[0]: got %q, want os", hydrator.installed[0])
+	}
+	if hydrator.installed[1] != "mcp-bridge" {
+		t.Errorf("hydrator.installed[1]: got %q, want mcp-bridge", hydrator.installed[1])
+	}
+}
+
+func TestManagerCreate_NoHydratorSkipsPackages(t *testing.T) {
+	t.Parallel()
+
+	driver := &fakeRuntimeDriver{
+		createSandbox: &Sandbox{ID: "sb-no-hydrator", Status: StatusStopped},
+	}
+	manager := NewManagerWithOptions(driver, ManagerOptions{Store: NewMemoryStore()})
+
+	// Should succeed without panicking when Hydrator is nil and Packages is set.
+	_, err := manager.Create(context.Background(), SandboxConfig{
+		Image:    "primitivebox-sandbox:latest",
+		Packages: []string{"os"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+}

@@ -1,0 +1,45 @@
+name: data-pack
+version: 0.1.0
+description: Minimal SQLite-backed data adapter. Demonstrates the PrimitiveBox package format.
+
+adapter:
+  type: binary
+  binary_path: "{pb_dir}/pb-data-adapter"
+  socket_path: "{workspace}/.pb/sockets/data-pack.sock"
+  args:
+    - "--db"
+    - "{workspace}/.pb/data-pack.db"
+
+primitives:
+  - name: data.schema
+    description: List tables and columns
+    intent:
+      category: query
+      side_effect: read
+      risk_level: low
+      reversible: true
+
+  - name: data.query
+    description: Execute a SELECT statement
+    intent:
+      category: query
+      side_effect: read
+      risk_level: low
+      reversible: true
+
+  - name: data.insert
+    description: Insert a row into a table (irreversible — triggers CVR)
+    intent:
+      category: mutation
+      side_effect: write
+      risk_level: high
+      reversible: false
+
+healthcheck:
+  primitive: data.schema
+  timeout: 5s
+
+bootstrap:
+  files:
+    - src: seed.sql
+      dst: .pb/data-pack-seed.sql

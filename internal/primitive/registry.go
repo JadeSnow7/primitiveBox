@@ -138,10 +138,13 @@ func (r *Registry) RegisterDefaults(workspaceDir string, options Options) {
 // exposed in host workspace mode.
 func (r *Registry) RegisterSandboxExtras(workspaceDir string, options Options) {
 	r.MustRegister(NewDBSchema(workspaceDir))
+	r.MustRegister(NewDBQuery(workspaceDir))
+	r.MustRegister(NewDBExecute(workspaceDir))
 	r.MustRegister(NewDBQueryReadonly(workspaceDir))
 
 	manager := NewBrowserSessionManager(options)
 	r.MustRegister(NewBrowserGoto(workspaceDir, manager, options))
+	r.MustRegister(NewBrowserRead(workspaceDir, manager, options))
 	r.MustRegister(NewBrowserExtract(workspaceDir, manager, options))
 	r.MustRegister(NewBrowserClick(workspaceDir, manager, options))
 	r.MustRegister(NewBrowserScreenshot(workspaceDir, manager, options))

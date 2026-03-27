@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -21,22 +22,28 @@ type DBConnectionConfig struct {
 	Dialect string `json:"dialect"`
 	Path    string `json:"path,omitempty"`
 	DSN     string `json:"dsn,omitempty"`
+	DSNEnv  string `json:"dsn_env,omitempty"`
 }
 
 type dbSchemaParams struct {
 	Connection DBConnectionConfig `json:"connection"`
 }
 
-type dbQueryReadonlyParams struct {
+type dbQueryParams struct {
 	Connection DBConnectionConfig `json:"connection"`
 	Query      string             `json:"query"`
 	MaxRows    int                `json:"max_rows,omitempty"`
 }
 
+type dbExecuteParams struct {
+	Connection DBConnectionConfig `json:"connection"`
+	Query      string             `json:"query"`
+}
+
 type dbSchemaResult struct {
-	Dialect string         `json:"dialect"`
-	Tables  []dbTableInfo  `json:"tables"`
-	Indexes []dbIndexInfo  `json:"indexes"`
+	Dialect string        `json:"dialect"`
+	Tables  []dbTableInfo `json:"tables"`
+	Indexes []dbIndexInfo `json:"indexes"`
 }
 
 type dbTableInfo struct {
@@ -55,22 +62,22 @@ type dbColumnInfo struct {
 }
 
 type dbIndexInfo struct {
-	Schema   string   `json:"schema,omitempty"`
-	Table    string   `json:"table"`
-	Name     string   `json:"name"`
-	Columns  []string `json:"columns,omitempty"`
-	Unique   bool     `json:"unique"`
-	DDL      string   `json:"ddl,omitempty"`
-	Primary  bool     `json:"primary,omitempty"`
+	Schema  string   `json:"schema,omitempty"`
+	Table   string   `json:"table"`
+	Name    string   `json:"name"`
+	Columns []string `json:"columns,omitempty"`
+	Unique  bool     `json:"unique"`
+	DDL     string   `json:"ddl,omitempty"`
+	Primary bool     `json:"primary,omitempty"`
 }
 
 type dbQueryResult struct {
-	Dialect   string                   `json:"dialect"`
-	Columns   []dbResultColumn         `json:"columns"`
-	Rows      []map[string]any         `json:"rows"`
-	RowCount  int                      `json:"row_count"`
-	Limited   bool                     `json:"limited"`
-	Query     string                   `json:"query"`
+	Dialect  string           `json:"dialect"`
+	Columns  []dbResultColumn `json:"columns"`
+	Rows     []map[string]any `json:"rows"`
+	RowCount int              `json:"row_count"`
+	Limited  bool             `json:"limited"`
+	Query    string           `json:"query"`
 }
 
 type dbResultColumn struct {
@@ -79,12 +86,37 @@ type dbResultColumn struct {
 	Nullable bool   `json:"nullable"`
 }
 
+type dbExecuteResult struct {
+	Dialect      string `json:"dialect"`
+	Query        string `json:"query"`
+	RowsAffected int64  `json:"rows_affected"`
+}
+
+type dbReadonlyQueryExecution struct {
+	Dialect  string
+	Columns  []dbResultColumn
+	Rows     []map[string]any
+	RowCount int
+	Limited  bool
+	Query    string
+}
+
 type dbSchemaPrimitive struct {
 	workspaceDir string
 	resolver     workspacePathResolver
 }
 
-type dbQueryReadonlyPrimitive struct {
+type dbQueryPrimitive struct {
+	workspaceDir string
+	resolver     workspacePathResolver
+}
+
+type dbExecutePrimitive struct {
+	workspaceDir string
+	resolver     workspacePathResolver
+}
+
+type dbQueryReadonlyCompatPrimitive struct {
 	workspaceDir string
 	resolver     workspacePathResolver
 }
@@ -96,8 +128,22 @@ func NewDBSchema(workspaceDir string) Primitive {
 	}
 }
 
+func NewDBQuery(workspaceDir string) Primitive {
+	return &dbQueryPrimitive{
+		workspaceDir: workspaceDir,
+		resolver:     newWorkspacePathResolver(workspaceDir),
+	}
+}
+
+func NewDBExecute(workspaceDir string) Primitive {
+	return &dbExecutePrimitive{
+		workspaceDir: workspaceDir,
+		resolver:     newWorkspacePathResolver(workspaceDir),
+	}
+}
+
 func NewDBQueryReadonly(workspaceDir string) Primitive {
-	return &dbQueryReadonlyPrimitive{
+	return &dbQueryReadonlyCompatPrimitive{
 		workspaceDir: workspaceDir,
 		resolver:     newWorkspacePathResolver(workspaceDir),
 	}
@@ -118,7 +164,8 @@ func (p *dbSchemaPrimitive) Schema() Schema {
 					"properties":{
 						"dialect":{"type":"string","enum":["sqlite","postgres"]},
 						"path":{"type":"string"},
-						"dsn":{"type":"string"}
+						"dsn":{"type":"string"},
+						"dsn_env":{"type":"string"}
 					},
 					"required":["dialect"]
 				}
@@ -180,13 +227,14 @@ func (p *dbSchemaPrimitive) Execute(ctx context.Context, params json.RawMessage)
 	}, nil
 }
 
-func (p *dbQueryReadonlyPrimitive) Name() string     { return "db.query_readonly" }
-func (p *dbQueryReadonlyPrimitive) Category() string { return "db" }
+func (p *dbQueryPrimitive) Name() string     { return "db.query" }
+func (p *dbQueryPrimitive) Category() string { return "db" }
 
-func (p *dbQueryReadonlyPrimitive) Schema() Schema {
+func (p *dbQueryPrimitive) Schema() Schema {
 	return Schema{
-		Name:        p.Name(),
-		Description: "Run a single read-only SQL query with a strict row cap.",
+		Name:         p.Name(),
+		Description:  "Run a single read-only SQL query and return rows as a strict JSON array.",
+		UILayoutHint: "table",
 		Input: json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -195,7 +243,8 @@ func (p *dbQueryReadonlyPrimitive) Schema() Schema {
 					"properties":{
 						"dialect":{"type":"string","enum":["sqlite","postgres"]},
 						"path":{"type":"string"},
-						"dsn":{"type":"string"}
+						"dsn":{"type":"string"},
+						"dsn_env":{"type":"string"}
 					},
 					"required":["dialect"]
 				},
@@ -205,22 +254,14 @@ func (p *dbQueryReadonlyPrimitive) Schema() Schema {
 			"required":["connection","query"]
 		}`),
 		Output: json.RawMessage(`{
-			"type":"object",
-			"properties":{
-				"dialect":{"type":"string"},
-				"columns":{"type":"array"},
-				"rows":{"type":"array"},
-				"row_count":{"type":"integer"},
-				"limited":{"type":"boolean"},
-				"query":{"type":"string"}
-			},
-			"required":["dialect","columns","rows","row_count","limited","query"]
+			"type":"array",
+			"items":{"type":"object"}
 		}`),
 	}
 }
 
-func (p *dbQueryReadonlyPrimitive) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
-	var input dbQueryReadonlyParams
+func (p *dbQueryPrimitive) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
+	var input dbQueryParams
 	if err := json.Unmarshal(params, &input); err != nil {
 		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "invalid params: " + err.Error()}
 	}
@@ -234,71 +275,178 @@ func (p *dbQueryReadonlyPrimitive) Execute(ctx context.Context, params json.RawM
 	}
 	defer db.Close()
 
-	capRows, normalized, err := normalizeReadonlyQuery(input.Query, input.MaxRows)
-	if err != nil {
-		return Result{}, err
-	}
-	execQuery := fmt.Sprintf("SELECT * FROM (%s) AS pb_readonly LIMIT %d", normalized, capRows+1)
 	emitDBProgress(ctx, p.Name(), "query_started", map[string]any{
 		"dialect":  dialect,
 		"target":   "query",
-		"max_rows": capRows,
+		"max_rows": clampReadonlyRows(input.MaxRows),
 	})
 
-	rows, err := db.QueryContext(ctx, execQuery)
+	queryResult, err := executeReadonlyQuery(ctx, db, dialect, input.Query, input.MaxRows)
 	if err != nil {
-		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
-	}
-	defer rows.Close()
-
-	columns, err := rows.ColumnTypes()
-	if err != nil {
-		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
-	}
-	columnDefs := make([]dbResultColumn, 0, len(columns))
-	for _, column := range columns {
-		nullable, ok := column.Nullable()
-		columnDefs = append(columnDefs, dbResultColumn{
-			Name:     column.Name(),
-			Database: column.DatabaseTypeName(),
-			Nullable: ok && nullable,
-		})
+		return Result{}, err
 	}
 
-	resultRows := make([]map[string]any, 0, capRows)
-	limited := false
-	for rows.Next() {
-		record, err := scanRow(columns, rows)
-		if err != nil {
-			return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
-		}
-		if len(resultRows) == capRows {
-			limited = true
-			break
-		}
-		resultRows = append(resultRows, record)
-	}
-	if err := rows.Err(); err != nil {
-		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
-	}
-
-	result := dbQueryResult{
-		Dialect:  dialect,
-		Columns:  columnDefs,
-		Rows:     resultRows,
-		RowCount: len(resultRows),
-		Limited:  limited,
-		Query:    normalized,
-	}
 	emitDBProgress(ctx, p.Name(), "query_completed", map[string]any{
 		"dialect":     dialect,
 		"target":      "query",
-		"row_count":   result.RowCount,
-		"limited":     result.Limited,
+		"row_count":   queryResult.RowCount,
+		"limited":     queryResult.Limited,
 		"duration_ms": time.Since(start).Milliseconds(),
 	})
 	return Result{
+		Data:     queryResult.Rows,
+		Duration: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+func (p *dbExecutePrimitive) Name() string     { return "db.execute" }
+func (p *dbExecutePrimitive) Category() string { return "db" }
+
+func (p *dbExecutePrimitive) Schema() Schema {
+	return Schema{
+		Name:        p.Name(),
+		Description: "Run a single SQL mutation statement (DDL/DML).",
+		Input: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"connection":{
+					"type":"object",
+					"properties":{
+						"dialect":{"type":"string","enum":["sqlite","postgres"]},
+						"path":{"type":"string"},
+						"dsn":{"type":"string"},
+						"dsn_env":{"type":"string"}
+					},
+					"required":["dialect"]
+				},
+				"query":{"type":"string"}
+			},
+			"required":["connection","query"]
+		}`),
+		Output: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"dialect":{"type":"string"},
+				"query":{"type":"string"},
+				"rows_affected":{"type":"integer"}
+			},
+			"required":["dialect","query","rows_affected"]
+		}`),
+	}
+}
+
+func (p *dbExecutePrimitive) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
+	var input dbExecuteParams
+	if err := json.Unmarshal(params, &input); err != nil {
+		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "invalid params: " + err.Error()}
+	}
+	start := time.Now()
+	db, dialect, err := p.openDB(ctx, input.Connection)
+	if err != nil {
+		return Result{}, err
+	}
+	defer db.Close()
+
+	normalized, err := normalizeExecuteQuery(input.Query)
+	if err != nil {
+		return Result{}, err
+	}
+
+	emitDBProgress(ctx, p.Name(), "execute_started", map[string]any{
+		"dialect": dialect,
+		"target":  "execute",
+	})
+	execResult, err := db.ExecContext(ctx, normalized)
+	if err != nil {
+		return Result{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+	rowsAffected, err := execResult.RowsAffected()
+	if err != nil {
+		rowsAffected = 0
+	}
+	result := dbExecuteResult{
+		Dialect:      dialect,
+		Query:        normalized,
+		RowsAffected: rowsAffected,
+	}
+	emitDBProgress(ctx, p.Name(), "execute_completed", map[string]any{
+		"dialect":       dialect,
+		"target":        "execute",
+		"rows_affected": rowsAffected,
+		"duration_ms":   time.Since(start).Milliseconds(),
+	})
+	return Result{
 		Data:     result,
+		Duration: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+func (p *dbQueryReadonlyCompatPrimitive) Name() string     { return "db.query_readonly" }
+func (p *dbQueryReadonlyCompatPrimitive) Category() string { return "db" }
+func (p *dbQueryReadonlyCompatPrimitive) Schema() Schema {
+	schema := (&dbQueryPrimitive{
+		workspaceDir: p.workspaceDir,
+		resolver:     p.resolver,
+	}).Schema()
+	schema.Name = p.Name()
+	schema.Description = "Deprecated alias for db.query that preserves the legacy response envelope."
+	schema.Output = json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"dialect":{"type":"string"},
+			"columns":{"type":"array"},
+			"rows":{"type":"array"},
+			"row_count":{"type":"integer"},
+			"limited":{"type":"boolean"},
+			"query":{"type":"string"}
+		},
+		"required":["dialect","columns","rows","row_count","limited","query"]
+	}`)
+	schema.OutputSchema = cloneJSON(schema.Output)
+	return schema
+}
+func (p *dbQueryReadonlyCompatPrimitive) Execute(ctx context.Context, params json.RawMessage) (Result, error) {
+	var input dbQueryParams
+	if err := json.Unmarshal(params, &input); err != nil {
+		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "invalid params: " + err.Error()}
+	}
+	if strings.TrimSpace(input.Query) == "" {
+		return Result{}, &PrimitiveError{Code: ErrValidation, Message: "query is required"}
+	}
+	start := time.Now()
+	db, dialect, err := p.openDB(ctx, input.Connection)
+	if err != nil {
+		return Result{}, err
+	}
+	defer db.Close()
+
+	emitDBProgress(ctx, p.Name(), "query_started", map[string]any{
+		"dialect":  dialect,
+		"target":   "query",
+		"max_rows": clampReadonlyRows(input.MaxRows),
+	})
+
+	queryResult, err := executeReadonlyQuery(ctx, db, dialect, input.Query, input.MaxRows)
+	if err != nil {
+		return Result{}, err
+	}
+
+	emitDBProgress(ctx, p.Name(), "query_completed", map[string]any{
+		"dialect":     dialect,
+		"target":      "query",
+		"row_count":   queryResult.RowCount,
+		"limited":     queryResult.Limited,
+		"duration_ms": time.Since(start).Milliseconds(),
+	})
+	return Result{
+		Data: dbQueryResult{
+			Dialect:  queryResult.Dialect,
+			Columns:  queryResult.Columns,
+			Rows:     queryResult.Rows,
+			RowCount: queryResult.RowCount,
+			Limited:  queryResult.Limited,
+			Query:    queryResult.Query,
+		},
 		Duration: time.Since(start).Milliseconds(),
 	}, nil
 }
@@ -307,7 +455,15 @@ func (p *dbSchemaPrimitive) openDB(ctx context.Context, config DBConnectionConfi
 	return openDBConnection(ctx, p.resolver, config)
 }
 
-func (p *dbQueryReadonlyPrimitive) openDB(ctx context.Context, config DBConnectionConfig) (*sql.DB, string, error) {
+func (p *dbQueryPrimitive) openDB(ctx context.Context, config DBConnectionConfig) (*sql.DB, string, error) {
+	return openDBConnection(ctx, p.resolver, config)
+}
+
+func (p *dbQueryReadonlyCompatPrimitive) openDB(ctx context.Context, config DBConnectionConfig) (*sql.DB, string, error) {
+	return openDBConnection(ctx, p.resolver, config)
+}
+
+func (p *dbExecutePrimitive) openDB(ctx context.Context, config DBConnectionConfig) (*sql.DB, string, error) {
 	return openDBConnection(ctx, p.resolver, config)
 }
 
@@ -331,10 +487,14 @@ func openDBConnection(ctx context.Context, resolver workspacePathResolver, confi
 		}
 		return db, "sqlite", nil
 	case "postgres":
-		if strings.TrimSpace(config.DSN) == "" {
+		dsn := strings.TrimSpace(config.DSN)
+		if dsn == "" {
+			dsn = resolveDBConnectionEnv(config.DSNEnv)
+		}
+		if dsn == "" {
 			return nil, "", &PrimitiveError{Code: ErrValidation, Message: "postgres connection requires dsn"}
 		}
-		db, err := sql.Open("postgres", config.DSN)
+		db, err := sql.Open("postgres", dsn)
 		if err != nil {
 			return nil, "", &PrimitiveError{Code: ErrExecution, Message: err.Error()}
 		}
@@ -346,6 +506,27 @@ func openDBConnection(ctx context.Context, resolver workspacePathResolver, confi
 	default:
 		return nil, "", &PrimitiveError{Code: ErrValidation, Message: "dialect must be sqlite or postgres"}
 	}
+}
+
+func resolveDBConnectionEnv(explicitKey string) string {
+	key := strings.TrimSpace(explicitKey)
+	if key != "" {
+		return strings.TrimSpace(os.Getenv(key))
+	}
+	for _, candidate := range []string{"PB_DB_DSN", "DATABASE_URL", "DB_DSN"} {
+		if value := strings.TrimSpace(os.Getenv(candidate)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func clampReadonlyRows(requestedRows int) int {
+	maxRows := requestedRows
+	if maxRows <= 0 || maxRows > maxReadonlyRows {
+		maxRows = maxReadonlyRows
+	}
+	return maxRows
 }
 
 func normalizeReadonlyQuery(query string, requestedRows int) (int, string, error) {
@@ -368,11 +549,86 @@ func normalizeReadonlyQuery(query string, requestedRows int) (int, string, error
 	default:
 		return 0, "", &PrimitiveError{Code: ErrPermission, Message: "query must be a read-only SELECT statement"}
 	}
-	maxRows := requestedRows
-	if maxRows <= 0 || maxRows > maxReadonlyRows {
-		maxRows = maxReadonlyRows
-	}
+	maxRows := clampReadonlyRows(requestedRows)
 	return maxRows, trimmed, nil
+}
+
+func normalizeExecuteQuery(query string) (string, error) {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return "", &PrimitiveError{Code: ErrValidation, Message: "query is required"}
+	}
+	if strings.Contains(trimmed, ";") {
+		if !strings.HasSuffix(trimmed, ";") || strings.Contains(strings.TrimSuffix(trimmed, ";"), ";") {
+			return "", &PrimitiveError{Code: ErrPermission, Message: "multiple SQL statements are not allowed"}
+		}
+		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, ";"))
+	}
+	stmt, err := sqlparser.Parse(trimmed)
+	if err != nil {
+		return "", &PrimitiveError{Code: ErrPermission, Message: "query must be a single DDL/DML statement"}
+	}
+	switch stmt.(type) {
+	case *sqlparser.Select, *sqlparser.Union:
+		return "", &PrimitiveError{Code: ErrPermission, Message: "read-only SELECT queries must use db.query"}
+	default:
+		return trimmed, nil
+	}
+}
+
+func executeReadonlyQuery(ctx context.Context, db *sql.DB, dialect, query string, requestedRows int) (dbReadonlyQueryExecution, error) {
+	capRows, normalized, err := normalizeReadonlyQuery(query, requestedRows)
+	if err != nil {
+		return dbReadonlyQueryExecution{}, err
+	}
+	execQuery := fmt.Sprintf("SELECT * FROM (%s) AS pb_readonly LIMIT %d", normalized, capRows+1)
+
+	rows, err := db.QueryContext(ctx, execQuery)
+	if err != nil {
+		return dbReadonlyQueryExecution{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+	defer rows.Close()
+
+	columns, err := rows.ColumnTypes()
+	if err != nil {
+		return dbReadonlyQueryExecution{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+
+	columnDefs := make([]dbResultColumn, 0, len(columns))
+	for _, column := range columns {
+		nullable, ok := column.Nullable()
+		columnDefs = append(columnDefs, dbResultColumn{
+			Name:     column.Name(),
+			Database: column.DatabaseTypeName(),
+			Nullable: ok && nullable,
+		})
+	}
+
+	resultRows := make([]map[string]any, 0, capRows)
+	limited := false
+	for rows.Next() {
+		record, err := scanRow(columns, rows)
+		if err != nil {
+			return dbReadonlyQueryExecution{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+		}
+		if len(resultRows) == capRows {
+			limited = true
+			break
+		}
+		resultRows = append(resultRows, record)
+	}
+	if err := rows.Err(); err != nil {
+		return dbReadonlyQueryExecution{}, &PrimitiveError{Code: ErrExecution, Message: err.Error()}
+	}
+
+	return dbReadonlyQueryExecution{
+		Dialect:  dialect,
+		Columns:  columnDefs,
+		Rows:     resultRows,
+		RowCount: len(resultRows),
+		Limited:  limited,
+		Query:    normalized,
+	}, nil
 }
 
 func scanRow(columns []*sql.ColumnType, rows *sql.Rows) (map[string]any, error) {

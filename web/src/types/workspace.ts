@@ -11,6 +11,13 @@ export const EXECUTION_METHODS = [
   'state.restore',
   'verify.test',
   'code.search',
+  'db.query',
+  'db.execute',
+  'browser.goto',
+  'browser.read',
+  'email.send',
+  'demo.irrevocable_action',
+  'demo.tabular_data',
 ] as const
 export type ExecutionMethod = typeof EXECUTION_METHODS[number]
 
@@ -64,6 +71,17 @@ export interface VerificationResult {
   reason: string
   /** Missing steps if not verified; empty array when verified. */
   missing: string[]
+  /** Concrete next actions the planner/executor should take. */
+  recommendedNext: string[]
+}
+
+export type PrimitiveRiskLevel = 'low' | 'medium' | 'high'
+
+export interface PrimitiveIntent {
+  category: string
+  reversible: boolean
+  risk_level: PrimitiveRiskLevel
+  side_effect: string
 }
 
 // ─── Panel types ────────────────────────────────────────────────────────────
@@ -76,10 +94,36 @@ export type PanelType =
   | 'diff'
   | 'primitive'
 
+export type WorkspaceEntityType =
+  | 'file'
+  | 'directory'
+  | 'process'
+  | 'database_table'
+  | 'web_page'
+  | 'unknown'
+
+export interface WorkspaceEntity {
+  id: string
+  type: WorkspaceEntityType
+  uri: string
+  metadata: Record<string, unknown>
+  /**
+   * Monotonic version used for staleness checks across bound panels.
+   * If one panel updates an entity, other panels with an older snapshot can
+   * detect stale state.
+   */
+  version: number
+  lastTouchedAt: string
+  lastSourceExecutionId?: string
+}
+
 export interface WorkspacePanel {
   id: string
   type: PanelType
   props: Record<string, unknown>
+  entityId?: string
+  entityIds?: string[]
+  entityVersionSnapshot?: number
 }
 
 // ─── Layout tree ─────────────────────────────────────────────────────────────
@@ -98,7 +142,7 @@ export interface SemanticRef {
 }
 
 export type UIPrimitive =
-  | { method: 'ui.panel.open';   params: { type: PanelType; props?: Record<string, unknown>; target?: SemanticRef } }
+  | { method: 'ui.panel.open';   params: { type: PanelType; props?: Record<string, unknown>; target?: SemanticRef; entityId?: string; entityIds?: string[] } }
   | { method: 'ui.panel.close';  params: { target: SemanticRef } }
   | { method: 'ui.layout.split'; params: { target: SemanticRef; direction: 'horizontal' | 'vertical' } }
   | { method: 'ui.focus.panel';  params: { target: SemanticRef } }

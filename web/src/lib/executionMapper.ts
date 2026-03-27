@@ -15,6 +15,9 @@
  */
 
 import type { UIPrimitive, PanelType } from '@/types/workspace'
+import type { WorkspaceEntity } from '@/types/workspace'
+import { retainExecutionPayload } from '@/lib/resultRetention'
+import { usePrimitiveStore } from '@/store/primitiveStore'
 
 // ─── Internal helper type ─────────────────────────────────────────────────────
 
@@ -38,31 +41,32 @@ function openPanel(
  * `sourceExecutionId` will be stamped on all returned primitives by the caller.
  */
 export type ExecutionUIMapper = (
+  method: string,
   params: Record<string, unknown>,
   result: unknown,
 ) => PanelOpenPrimitive[]
 
 // ─── Individual mappers ───────────────────────────────────────────────────────
 
-const mapFsRead: ExecutionUIMapper = (params, result) => {
+const mapFsRead: ExecutionUIMapper = (method, params, result) => {
   if (!result) return []
   const path = typeof params['path'] === 'string' ? params['path'] : 'file'
-  return [openPanel('primitive', { title: path, content: result })]
+  return [openPanel('primitive', { title: path, method, result: retainExecutionPayload(result) })]
 }
 
-const mapFsList: ExecutionUIMapper = (params, result) => {
+const mapFsList: ExecutionUIMapper = (method, params, result) => {
   if (!Array.isArray(result) && !result) return []
   const path = typeof params['path'] === 'string' ? params['path'] : '.'
-  return [openPanel('primitive', { title: `ls ${path}`, items: result })]
+  return [openPanel('primitive', { title: `ls ${path}`, method, result: retainExecutionPayload(result) })]
 }
 
-const mapFsDiff: ExecutionUIMapper = (params, result) => {
+const mapFsDiff: ExecutionUIMapper = (_method, params, result) => {
   if (!result) return []
   const path = typeof params['path'] === 'string' ? params['path'] : ''
-  return [openPanel('diff', { path, diff: result })]
+  return [openPanel('diff', { path, diff: retainExecutionPayload(result) })]
 }
 
-const mapShellExec: ExecutionUIMapper = (_params, result) => {
+const mapShellExec: ExecutionUIMapper = (_method, _params, result) => {
   const r = result as Record<string, unknown> | null | undefined
   return [
     openPanel('event_stream', {
@@ -73,9 +77,21 @@ const mapShellExec: ExecutionUIMapper = (_params, result) => {
   ]
 }
 
-const mapStateCheckpoint: ExecutionUIMapper = (_params, result) => {
+const mapStateCheckpoint: ExecutionUIMapper = (_method, _params, result) => {
   if (!result) return []
   return [openPanel('checkpoint', { checkpoint: result })]
+}
+
+const mapDefaultPrimitive: ExecutionUIMapper = (method, _params, result) => {
+  const primitive = usePrimitiveStore.getState().getPrimitive(method)
+  return [
+    openPanel('primitive', {
+      title: method,
+      method,
+      result: retainExecutionPayload(result),
+      uiLayoutHint: primitive?.ui_layout_hint,
+    }),
+  ]
 }
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
@@ -100,6 +116,15 @@ export function registerExecutionUIMapper(method: string, mapper: ExecutionUIMap
   executionUIRegistry[method] = mapper
 }
 
+export function resolvePrimitiveResult(
+  props: Record<string, unknown>,
+): unknown {
+  if ('result' in props) return props['result']
+  if ('content' in props) return props['content']
+  if ('items' in props) return props['items']
+  return props
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -116,11 +141,13 @@ export function mapExecutionResultToUI(
   params: Record<string, unknown>,
   result: unknown,
   sourceExecutionId: string,
+  entities: WorkspaceEntity[] = [],
 ): UIPrimitive[] {
-  const mapper = executionUIRegistry[method]
-  if (!mapper) return []
+  const mapper = executionUIRegistry[method] ?? mapDefaultPrimitive
 
-  const raw = mapper(params, result)
+  const raw = mapper(method, params, result)
+  const entityIds = entities.map((entity) => entity.id)
+  const entityId = entityIds[0]
 
   // Stamp sourceExecutionId into each panel's props for dedup.
   // All mappers return PanelOpenPrimitive[], so props is always present.
@@ -129,7 +156,14 @@ export function mapExecutionResultToUI(
       method: 'ui.panel.open',
       params: {
         type: p.params.type,
-        props: { ...p.params.props, sourceExecutionId },
+        props: {
+          ...p.params.props,
+          sourceExecutionId,
+          ...(entityId ? { entityId } : {}),
+          ...(entityIds.length > 0 ? { entityIds } : {}),
+        },
+        ...(entityId ? { entityId } : {}),
+        ...(entityIds.length > 0 ? { entityIds } : {}),
       },
     }),
   )

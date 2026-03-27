@@ -241,8 +241,21 @@ func (c *defaultKubernetesClient) applyPod(ctx context.Context, namespace string
 		}
 		return err
 	}
-	pod.ResourceVersion = existing.ResourceVersion
-	_, err = c.clientset.CoreV1().Pods(namespace).Update(ctx, pod, metav1.UpdateOptions{})
+
+	// Pod specs are largely immutable after creation. Kubernetes rejects updates to
+	// most spec fields on running and pending pods. Only recreate if the existing
+	// pod has reached a terminal phase (Succeeded/Failed) — otherwise treat the
+	// running/pending pod as already satisfying the desired state.
+	phase := existing.Status.Phase
+	if phase != corev1.PodSucceeded && phase != corev1.PodFailed {
+		return nil
+	}
+
+	deletePolicy := metav1.DeletePropagationBackground
+	if err := c.clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{PropagationPolicy: &deletePolicy}); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	_, err = c.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	return err
 }
 

@@ -15,6 +15,8 @@ export const UIPrimitiveSchema = z.discriminatedUnion('method', [
       type: PanelTypeSchema,
       props: z.record(z.unknown()).default({}),
       target: SemanticRefSchema.optional(),
+      entityId: z.string().optional(),
+      entityIds: z.array(z.string()).optional(),
     }),
   }),
   z.object({

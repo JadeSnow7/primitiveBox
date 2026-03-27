@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { callOrchestratorAI, buildOrchestratorContext } from '@/api/uiPrimitives'
 import { dispatchOrchestratorOutput } from '@/lib/orchestratorDispatcher'
 import { runAgentLoop } from '@/lib/agentLoop'
+import { useOrchestratorStore } from '@/store/orchestratorStore'
+import { usePrimitiveStore } from '@/store/primitiveStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { useTimelineStore } from '@/store/timelineStore'
+import { useSandboxStore } from '@/store/sandboxStore'
 import type { OrchestratorOutput } from '@/types/workspace'
 import type { VerificationResult } from '@/types/workspace'
 import type { TimelineEntry } from '@/types/timeline'
@@ -13,7 +16,9 @@ import type { TimelineEntry } from '@/types/timeline'
 const KIND_COLORS: Record<TimelineEntry['kind'], string> = {
   'plan':                 'var(--purple, #c084fc)',
   'execution.call':       'var(--blue)',
+  'execution.pending_review': '#f97316',
   'execution.result':     'var(--green, #4ade80)',
+  'execution.rejected':   'var(--red, #f87171)',
   'execution.skipped':    'var(--yellow, #facc15)',
   'execution.simulated':  '#fb923c',  // orange-400 — replay stub
   'ui':                   'var(--text-muted)',
@@ -22,7 +27,9 @@ const KIND_COLORS: Record<TimelineEntry['kind'], string> = {
 const KIND_LABELS: Record<TimelineEntry['kind'], string> = {
   'plan':                 'plan',
   'execution.call':       'exec.call',
+  'execution.pending_review': 'exec.review',
   'execution.result':     'exec.result',
+  'execution.rejected':   'exec.rejected',
   'execution.skipped':    'exec.skipped',
   'execution.simulated':  'exec.simulated',
   'ui':                   'ui',
@@ -43,9 +50,10 @@ export function AICommandBar() {
   const [agentConfidence, setAgentConfidence] = useState<number | null>(null)
   const [agentVerification, setAgentVerification] = useState<VerificationResult | null>(null)
   const [agentDoneReason, setAgentDoneReason] = useState<string | null>(null)
-  const [activeSandboxId] = useState<string | undefined>(undefined)
 
   const abortRef = useRef<AbortController | null>(null)
+  const runTokenRef = useRef(0)
+  const mountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const workspaceState  = useWorkspaceStore()
@@ -55,12 +63,32 @@ export function AICommandBar() {
   const appendTimeline  = useTimelineStore((s) => s.append)
   const clearTimeline   = useTimelineStore((s) => s.clear)
 
+  // Wire to the real selected sandbox — undefined when none is selected
+  const activeSandboxId = useSandboxStore((s) => s.selectedId ?? undefined)
+  const orchestratorPhase = useOrchestratorStore((s) => s.phase)
+  const resetOrchestrator = useOrchestratorStore((s) => s.reset)
+  const primitiveCatalogStatus = usePrimitiveStore((s) => s.status)
+  const primitiveCatalogError = usePrimitiveStore((s) => s.error)
+  const loadPrimitiveCatalog = usePrimitiveStore((s) => s.load)
+
   const panelCount = Object.keys(workspaceState.panels).length
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+      abortRef.current?.abort()
+    }
+  }, [])
 
   // ── One-shot: Send ───────────────────────────────────────────────────────────
 
   async function handleSend() {
     if (!input.trim()) return
+    if (primitiveCatalogStatus !== 'ready') {
+      setErrorMsg(primitiveCatalogError ?? 'Primitive catalog is still loading. Execution is fail-closed.')
+      setStatus('error')
+      return
+    }
     setStatus('loading')
     setPreview(null)
     setErrorMsg(null)
@@ -82,6 +110,11 @@ export function AICommandBar() {
 
   async function handleApply() {
     if (!preview) return
+    if (primitiveCatalogStatus !== 'ready') {
+      setErrorMsg(primitiveCatalogError ?? 'Primitive catalog is still loading. Execution is fail-closed.')
+      setStatus('error')
+      return
+    }
     await dispatchOrchestratorOutput(preview, {
       workspaceDispatch: dispatch,
       appendTimeline,
@@ -101,6 +134,12 @@ export function AICommandBar() {
 
   const handleRunAgent = useCallback(async () => {
     if (!input.trim()) return
+    if (primitiveCatalogStatus !== 'ready') {
+      setErrorMsg(primitiveCatalogError ?? 'Primitive catalog is still loading. Execution is fail-closed.')
+      setStatus('error')
+      return
+    }
+    abortRef.current?.abort()
     setStatus('running')
     setAgentIter(0)
     setAgentConfidence(null)
@@ -109,10 +148,14 @@ export function AICommandBar() {
     setErrorMsg(null)
 
     const abort = new AbortController()
+    const runToken = runTokenRef.current + 1
+    runTokenRef.current = runToken
     abortRef.current = abort
+    const isCurrentRun = () => mountedRef.current && runTokenRef.current === runToken && !abort.signal.aborted
 
     try {
-      await runAgentLoop(input, timelineEntries, {
+      // Note: no timelineEntries arg — agentLoop reads live store each iteration
+      await runAgentLoop(input, {
         workspaceDispatch: dispatch,
         appendTimeline,
         sandboxId: activeSandboxId,
@@ -120,18 +163,24 @@ export function AICommandBar() {
         maxIterations: 10,
         confidenceThreshold: 0.5,
         verify: true,
-        onIterationStart: (i) => setAgentIter(i + 1),
-        onConfidence: (_i, c) => setAgentConfidence(c),
-        onVerification: (v) => setAgentVerification(v),
-        onDone: (_n, reason) => setAgentDoneReason(reason),
+        onIterationStart: (i) => { if (isCurrentRun()) setAgentIter(i + 1) },
+        onConfidence: (_i, c) => { if (isCurrentRun()) setAgentConfidence(c) },
+        onVerification: (v) => { if (isCurrentRun()) setAgentVerification(v) },
+        onDone: (_n, reason) => { if (isCurrentRun()) setAgentDoneReason(reason) },
       })
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Agent loop error')
+      if (isCurrentRun()) {
+        setErrorMsg(err instanceof Error ? err.message : 'Agent loop error')
+      }
     } finally {
-      abortRef.current = null
-      setStatus('idle')
+      if (runTokenRef.current === runToken) {
+        abortRef.current = null
+        if (mountedRef.current) {
+          setStatus('idle')
+        }
+      }
     }
-  }, [input, timelineEntries, dispatch, appendTimeline, activeSandboxId])
+  }, [input, dispatch, appendTimeline, activeSandboxId, primitiveCatalogStatus, primitiveCatalogError])
 
   // ── Agent: Cancel ────────────────────────────────────────────────────────────
 
@@ -213,7 +262,7 @@ export function AICommandBar() {
             ) : (
               <button
                 onClick={() => void handleRunAgent()}
-                disabled={!input.trim()}
+                disabled={!input.trim() || primitiveCatalogStatus !== 'ready'}
                 className="rounded-lg bg-[var(--blue)] px-3 py-1.5 text-[12px] font-medium text-white transition-opacity disabled:opacity-40 hover:opacity-90"
               >
                 Run
@@ -222,7 +271,7 @@ export function AICommandBar() {
           ) : (
             <button
               onClick={() => void handleSend()}
-              disabled={status === 'loading' || !input.trim()}
+              disabled={status === 'loading' || !input.trim() || primitiveCatalogStatus !== 'ready'}
               className="rounded-lg bg-[var(--blue)] px-3 py-1.5 text-[12px] font-medium text-white transition-opacity disabled:opacity-40 hover:opacity-90"
             >
               {status === 'loading' ? '…' : 'Send'}
@@ -230,7 +279,7 @@ export function AICommandBar() {
           )}
 
           <button
-            onClick={() => { reset(); clearTimeline() }}
+            onClick={() => { reset(); clearTimeline(); resetOrchestrator() }}
             disabled={panelCount === 0 && timelineEntries.length === 0}
             className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-muted)] transition-colors disabled:opacity-30 hover:bg-[var(--bg-subtle)]"
           >
@@ -239,13 +288,31 @@ export function AICommandBar() {
         </div>
       </div>
 
+      {primitiveCatalogStatus !== 'ready' && (
+        <div className="flex items-center justify-between rounded-lg border border-[var(--red)]/20 bg-[var(--red-bg)] px-3 py-2">
+          <span className="text-[11px] text-[var(--red)]">
+            {primitiveCatalogStatus === 'loading'
+              ? 'Loading primitive catalog. Agent execution is paused until intent metadata is available.'
+              : `Primitive catalog failed to load. Execution is fail-closed. ${primitiveCatalogError ?? ''}`}
+          </span>
+          <button
+            onClick={() => void loadPrimitiveCatalog()}
+            className="rounded-md border border-[var(--red)]/30 px-2.5 py-1 text-[10px] text-[var(--red)] transition-colors hover:bg-[var(--bg-surface)]"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Agent running indicator + confidence bar */}
       {status === 'running' && (
         <div className="flex flex-col gap-1 rounded-lg border border-[var(--blue)]/30 bg-[var(--blue-bg)] px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--blue)]" />
             <span className="text-[12px] text-[var(--blue)]">
-              Agent running · iteration {agentIter}
+              {orchestratorPhase === 'AWAITING_REVIEW'
+                ? `Awaiting human review · iteration ${agentIter}`
+                : `Agent running · iteration ${agentIter}`}
             </span>
           </div>
           {agentConfidence !== null && (
@@ -359,7 +426,8 @@ export function AICommandBar() {
               <button
                 data-testid="workspace-apply"
                 onClick={() => void handleApply()}
-                className="rounded-md bg-[var(--blue)] px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+                disabled={primitiveCatalogStatus !== 'ready'}
+                className="rounded-md bg-[var(--blue)] px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
               >
                 Apply
               </button>

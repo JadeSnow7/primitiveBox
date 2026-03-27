@@ -1,6 +1,13 @@
 import { ORCHESTRATOR_SYSTEM_PROMPT } from '@/lib/orchestratorSystemPrompt'
 import { validateOrchestratorOutput } from '@/lib/uiPrimitiveValidator'
-import type { UIPrimitive, OrchestratorOutput, ExecutionCall, PlanStep } from '@/types/workspace'
+import { usePrimitiveStore } from '@/store/primitiveStore'
+import type {
+  UIPrimitive,
+  OrchestratorOutput,
+  ExecutionCall,
+  PlanStep,
+  WorkspaceEntityType,
+} from '@/types/workspace'
 import type { WorkspaceState } from '@/store/workspaceStore'
 import type { TimelineEntry } from '@/types/timeline'
 
@@ -15,14 +22,40 @@ export interface OpenEntity {
   props: Record<string, unknown>
 }
 
+export interface ActiveWorkspaceEntityObservation {
+  id: string
+  type: WorkspaceEntityType
+  uri: string
+  path?: string
+  focused: boolean
+  staleInFocusedPanel: boolean
+}
+
+/** Slim description of an app-registered primitive injected into LLM context. */
+export interface AppPrimitiveHint {
+  name: string
+  description: string
+  risk_level: string
+  reversible: boolean
+  requires_review: boolean
+}
+
 export interface OrchestratorContext {
   uiState: { panelCount: number; openTypes: string[] }
   /** Currently open panels with their props — used for entity-aware dedup */
   openEntities: OpenEntity[]
+  /** Semantic entities currently present on the workspace desk. */
+  activeWorkspaceEntities: ActiveWorkspaceEntityObservation[]
   sandboxId?: string
-  lastExecution?: { method: string; result?: unknown }
+  lastExecution?: { method: string; result?: unknown; error?: string }
   /** Last 5 timeline entry kinds for lightweight context injection */
   timelineSummary: string[]
+  /**
+   * App primitives currently registered in the live catalog (e.g., data.insert
+   * from a Boxfile package). Injected so the LLM knows which app methods it may
+   * dispatch and which require human review.
+   */
+  availableAppPrimitives?: AppPrimitiveHint[]
 }
 
 export function buildOrchestratorContext(
@@ -30,6 +63,55 @@ export function buildOrchestratorContext(
   opts: { sandboxId?: string; timelineEntries: TimelineEntry[] },
 ): OrchestratorContext {
   const panels = Object.values(state.panels)
+  const focusedPanel = state.focusedPanelId ? state.panels[state.focusedPanelId] : undefined
+  const focusedPanelEntityIds = new Set<string>()
+  if (focusedPanel?.entityId) focusedPanelEntityIds.add(focusedPanel.entityId)
+  if (focusedPanel?.entityIds) {
+    for (const id of focusedPanel.entityIds) focusedPanelEntityIds.add(id)
+  }
+
+  const openPanelEntityIds = new Set<string>()
+  for (const panel of panels) {
+    if (panel.entityId) openPanelEntityIds.add(panel.entityId)
+    if (Array.isArray(panel.entityIds)) {
+      for (const id of panel.entityIds) openPanelEntityIds.add(id)
+    }
+  }
+
+  const activeWorkspaceEntities: ActiveWorkspaceEntityObservation[] = []
+  for (const entityId of openPanelEntityIds) {
+    const entity = state.activeEntities[entityId]
+    if (!entity) continue
+    const focusedSnapshot = focusedPanel?.entityId === entityId
+      ? focusedPanel.entityVersionSnapshot
+      : Array.isArray(focusedPanel?.entityIds) && focusedPanel.entityIds.includes(entityId)
+        ? focusedPanel.entityVersionSnapshot
+        : undefined
+    activeWorkspaceEntities.push({
+      id: entity.id,
+      type: entity.type,
+      uri: entity.uri,
+      path: typeof entity.metadata['path'] === 'string' ? entity.metadata['path'] : undefined,
+      focused: focusedPanelEntityIds.has(entityId),
+      staleInFocusedPanel: focusedSnapshot !== undefined && focusedSnapshot < entity.version,
+    })
+  }
+
+  // Inject app primitives from the live catalog so the LLM knows what's available.
+  const { status: catalogStatus, primitives: allPrimitives } = usePrimitiveStore.getState()
+  const availableAppPrimitives: AppPrimitiveHint[] | undefined =
+    catalogStatus === 'ready'
+      ? allPrimitives
+          .filter((p) => p.kind === 'app')
+          .map((p) => ({
+            name: p.name,
+            description: p.description,
+            risk_level: p.intent.risk_level,
+            reversible: p.intent.reversible,
+            requires_review: p.intent.risk_level === 'high' || p.intent.reversible === false,
+          }))
+      : undefined
+
   return {
     uiState: {
       panelCount: panels.length,
@@ -39,12 +121,16 @@ export function buildOrchestratorContext(
       panelType: p.type,
       props: p.props,
     })),
+    activeWorkspaceEntities,
     sandboxId: opts.sandboxId,
     lastExecution: opts.timelineEntries
       .filter((e) => e.kind === 'execution.call')
       .slice(-1)
       .map((e) => ({ method: e.method }))[0],
     timelineSummary: opts.timelineEntries.slice(-5).map((e) => e.kind),
+    ...(availableAppPrimitives && availableAppPrimitives.length > 0
+      ? { availableAppPrimitives }
+      : {}),
   }
 }
 
@@ -87,13 +173,44 @@ function buildUserMessage(userInput: string, context: OrchestratorContext): stri
       lines.push(`  - ${entity.panelType}${path ? `: ${path}` : ''}${id ? ` [id:${id}]` : ''}`)
     }
   }
+  if (context.activeWorkspaceEntities.length > 0) {
+    lines.push('- Active Workspace Entities:')
+    lines.push(
+      JSON.stringify(
+        context.activeWorkspaceEntities.map((entity) => ({
+          type: entity.type,
+          path: entity.path ?? entity.uri,
+          id: entity.id,
+          focused: entity.focused,
+          stale_in_focused_panel: entity.staleInFocusedPanel,
+        })),
+        null,
+        2,
+      ),
+    )
+  }
   if (context.sandboxId) {
     lines.push(`- Active sandbox: ${context.sandboxId}`)
   } else {
     lines.push('- No active sandbox (execution calls will be skipped)')
   }
+  if (context.lastExecution) {
+    lines.push(
+      `- Last execution: ${context.lastExecution.method}${
+        context.lastExecution.error ? ` (error: ${context.lastExecution.error})` : ''
+      }`,
+    )
+  }
   if (context.timelineSummary.length > 0) {
     lines.push(`- Recent timeline: ${context.timelineSummary.join(' → ')}`)
+  }
+  if (context.availableAppPrimitives && context.availableAppPrimitives.length > 0) {
+    lines.push('')
+    lines.push('## Available App Primitives (callable in execution[])')
+    for (const prim of context.availableAppPrimitives) {
+      const reviewNote = prim.requires_review ? ' [REQUIRES HUMAN REVIEW — irreversible/high-risk]' : ''
+      lines.push(`- ${prim.name} — ${prim.description}${reviewNote}`)
+    }
   }
   return lines.join('\n')
 }
@@ -146,7 +263,15 @@ async function callLLMOrchestrator(
     const stripped = content.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const parsed: unknown = JSON.parse(stripped)
 
-    const validated = validateOrchestratorOutput(parsed)
+    // Build the set of allowed app method names from the live catalog so the
+    // validator accepts app primitives (e.g., data.insert) alongside built-ins.
+    const { status: cStatus, primitives: cPrimitives } = usePrimitiveStore.getState()
+    const appMethods: ReadonlySet<string> | undefined =
+      cStatus === 'ready'
+        ? new Set(cPrimitives.filter((p) => p.kind === 'app').map((p) => p.name))
+        : undefined
+
+    const validated = validateOrchestratorOutput(parsed, appMethods)
     if (!validated.success) {
       console.warn('[orchestrator] LLM output failed validation:', validated.error)
       return null
@@ -162,6 +287,7 @@ async function callLLMOrchestrator(
 
 type Intent =
   | 'modify'         // modify/write/fix/edit file → checkpoint-first
+  | 'email'          // external side effect → reviewer-gated
   | 'restore'        // undo/revert/restore → state.restore
   | 'debug'          // analyze trace, failure
   | 'read-file'      // read file
@@ -176,6 +302,7 @@ type Intent =
 
 function classifyIntent(input: string): Intent {
   const s = input.toLowerCase()
+  if (s.includes('email') || s.includes('mail') || s.includes('邮件') || s.includes('发送邮箱')) return 'email'
   if (s.includes('修改') || s.includes('modify') || s.includes('write') || s.includes('fix') || s.includes('edit') || s.includes('update') || s.includes('更新') || s.includes('编辑')) return 'modify'
   if (s.includes('restore') || s.includes('undo') || s.includes('revert') || s.includes('回滚') || s.includes('撤销') || s.includes('恢复')) return 'restore'
   if (s.includes('trace') || s.includes('分析') || s.includes('失败') || s.includes('analyze') || s.includes('debug') || s.includes('调试')) return 'debug'
@@ -210,6 +337,11 @@ function extractQuery(input: string): string {
   return input.trim()
 }
 
+function extractEmailRecipient(input: string): string {
+  const match = input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+  return match?.[0] ?? 'review@example.com'
+}
+
 function makeCallId(): string {
   return `call-${Math.random().toString(36).slice(2, 9)}`
 }
@@ -223,6 +355,50 @@ function buildLocalOutput(intent: Intent, input: string, context: OrchestratorCo
   const ui: UIPrimitive[] = []
 
   switch (intent) {
+    case 'email': {
+      const to = extractEmailRecipient(input)
+      const subject = 'Draft from PrimitiveBox'
+      const emailPrimitiveAvailable = usePrimitiveStore.getState().getPrimitive('email.send') !== null
+      if (emailPrimitiveAvailable) {
+        plan.push(
+          { step: 'draft outbound email', reason: 'prepare the requested external action' },
+          { step: 'request human review', reason: 'email.send is irreversible and must be approved before dispatch' },
+        )
+        execution.push({
+          id: makeCallId(),
+          method: 'email.send',
+          params: {
+            to,
+            subject,
+            body: input,
+          },
+        })
+      } else {
+        plan.push(
+          { step: 'draft outbound email', reason: 'prepare the requested message without assuming an installed email adapter' },
+          { step: 'show draft in workspace', reason: 'email.send is unavailable, so surface a manual draft instead of failing closed' },
+        )
+        ui.push({
+          method: 'ui.panel.open',
+          params: {
+            type: 'primitive',
+            props: {
+              title: `Email Draft: ${to}`,
+              method: 'email.draft',
+              uiLayoutHint: 'markdown',
+              result: {
+                markdown: `To: ${to}\nSubject: ${subject}\n\n${input}`,
+                to,
+                subject,
+                body: input,
+              },
+            },
+          },
+        })
+      }
+      break
+    }
+
     case 'modify': {
       const path = extractPath(input)
       plan.push(
@@ -274,8 +450,8 @@ function buildLocalOutput(intent: Intent, input: string, context: OrchestratorCo
     case 'read-file': {
       const path = extractPath(input)
       // Entity-aware: if this path is already open, just focus it
-      const alreadyOpen = context.openEntities.some(
-        (e) => e.panelType === 'primitive' && (e.props['path'] === path || e.props['title'] === path),
+      const alreadyOpen = context.activeWorkspaceEntities.some(
+        (entity) => entity.type === 'file' && (entity.path === path || entity.uri === path),
       )
       if (alreadyOpen) {
         plan.push({ step: `focus existing ${path} panel`, reason: 'file already open — avoid redundant read' })
@@ -394,10 +570,13 @@ function buildLocalOutput(intent: Intent, input: string, context: OrchestratorCo
 export async function callOrchestratorAI(
   userInput: string,
   context: OrchestratorContext,
+  opts: { forceLocal?: boolean } = {},
 ): Promise<OrchestratorOutput> {
   // ── Try LLM path ──────────────────────────────────────────────────────────
-  const llmResult = await callLLMOrchestrator(userInput, context)
-  if (llmResult) return llmResult
+  if (!opts.forceLocal) {
+    const llmResult = await callLLMOrchestrator(userInput, context)
+    if (llmResult) return llmResult
+  }
 
   // ── Local fallback ────────────────────────────────────────────────────────
   // Simulate async latency for UX consistency

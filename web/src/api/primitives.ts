@@ -10,10 +10,19 @@ interface PrimitiveResponse {
     input?: object
     output_schema?: object
     output?: object
+    ui_layout_hint?: string
     source?: string
     side_effect?: string
     timeout_ms?: number
     scope?: string
+    adapter?: string
+    status?: string
+    intent?: {
+      category: string
+      side_effect: string
+      reversible: boolean
+      risk_level: 'low' | 'medium' | 'high'
+    }
   }>
 }
 
@@ -31,17 +40,26 @@ interface JSONRPCResponse<T> {
 }
 
 export async function listPrimitives(): Promise<PrimitiveSchema[]> {
-  const data = await apiFetch<PrimitiveResponse>('/primitives')
+  const data = await apiFetch<PrimitiveResponse>('/api/v1/primitives')
   return data.primitives.map((item) => ({
     name: item.name,
     description: item.description,
     kind: item.source === 'app' ? 'app' : 'system',
     input_schema: item.input_schema ?? item.input ?? {},
     output_schema: item.output_schema ?? item.output ?? {},
+    ui_layout_hint: item.ui_layout_hint,
     namespace: item.namespace,
     side_effect: item.side_effect,
     timeout_ms: item.timeout_ms,
-    scope: item.scope
+    scope: item.scope,
+    adapter: item.adapter,
+    status: item.status,
+    intent: item.intent ?? {
+      category: 'mutation',
+      side_effect: item.side_effect ?? 'unknown',
+      reversible: false,
+      risk_level: 'high',
+    },
   }))
 }
 

@@ -15,3 +15,7 @@ examples/auto_fix_bug/venv/
 __pycache__/
 *.pyc
 .env
+/pb
+/pb-mcp-bridge
+/pb-os-adapter
+web/*.tsbuildinfo

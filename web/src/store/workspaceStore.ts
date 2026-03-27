@@ -1,8 +1,9 @@
 import { create } from 'zustand'
+import { retainPanelProps } from '@/lib/resultRetention'
 import { uiEventBus } from '@/lib/uiEventBus'
 import { validateUIPrimitives } from '@/lib/uiPrimitiveValidator'
 import type { ValidatedUIPrimitive } from '@/lib/uiPrimitiveValidator'
-import type { LayoutNode, PanelType, SemanticRef, WorkspacePanel } from '@/types/workspace'
+import type { LayoutNode, PanelType, SemanticRef, WorkspaceEntity, WorkspacePanel } from '@/types/workspace'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ function removePanel(layout: LayoutNode, panelId: string): LayoutNode {
 
 export interface WorkspaceData {
   panels: Record<string, WorkspacePanel>
+  activeEntities: Record<string, WorkspaceEntity>
   layout: LayoutNode
   focusedPanelId: string | null
   pendingSplitSlot: { parentPanelId: string; direction: 'horizontal' | 'vertical' } | null
@@ -86,6 +88,7 @@ export interface WorkspaceData {
 
 const INITIAL_DATA: WorkspaceData = {
   panels: {},
+  activeEntities: {},
   layout: { type: 'empty' },
   focusedPanelId: null,
   pendingSplitSlot: null,
@@ -93,6 +96,7 @@ const INITIAL_DATA: WorkspaceData = {
 
 export interface WorkspaceState extends WorkspaceData {
   dispatch: (rawInput: unknown) => void
+  upsertEntities: (entities: WorkspaceEntity[]) => void
   closePanel: (panelId: string) => void
   reset: () => void
   /**
@@ -118,6 +122,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       // Extract only the data portion
       let data: WorkspaceData = {
         panels: zustandState.panels,
+        activeEntities: zustandState.activeEntities,
         layout: zustandState.layout,
         focusedPanelId: zustandState.focusedPanelId,
         pendingSplitSlot: zustandState.pendingSplitSlot,
@@ -129,14 +134,43 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     })
   },
 
+  upsertEntities(entities: WorkspaceEntity[]) {
+    if (entities.length === 0) return
+    set((s) => {
+      const activeEntities = { ...s.activeEntities }
+      const now = new Date().toISOString()
+      for (const incoming of entities) {
+        const existing = activeEntities[incoming.id]
+        if (!existing) {
+          activeEntities[incoming.id] = {
+            ...incoming,
+            version: incoming.version > 0 ? incoming.version : 1,
+            lastTouchedAt: incoming.lastTouchedAt || now,
+          }
+          continue
+        }
+        activeEntities[incoming.id] = {
+          ...existing,
+          ...incoming,
+          metadata: { ...existing.metadata, ...incoming.metadata },
+          version: existing.version + 1,
+          lastTouchedAt: incoming.lastTouchedAt || now,
+        }
+      }
+      return { activeEntities }
+    })
+  },
+
   closePanel(panelId: string) {
     set((s) => {
       const panels = { ...s.panels }
       delete panels[panelId]
       const layout = removePanel(s.layout, panelId)
+      const activeEntities = pruneUnboundEntities(s.activeEntities, panels)
       uiEventBus.emit('ui.panel.closed', { panelId })
       return {
         panels,
+        activeEntities,
         layout,
         focusedPanelId: s.focusedPanelId === panelId ? null : s.focusedPanelId,
       }
@@ -161,7 +195,52 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 export function getWorkspacePanels(): Record<string, WorkspacePanel> {
   return useWorkspaceStore.getState().panels
 }
+
+export function getActiveWorkspaceEntities(): WorkspaceEntity[] {
+  return Object.values(useWorkspaceStore.getState().activeEntities)
+}
+
+export function upsertWorkspaceEntities(entities: WorkspaceEntity[]): void {
+  useWorkspaceStore.getState().upsertEntities(entities)
+}
+
 // ─── Pure reducer ────────────────────────────────────────────────────────────
+
+function extractEntityIdsFromPanel(panel: WorkspacePanel): string[] {
+  const set = new Set<string>()
+  if (typeof panel.entityId === 'string' && panel.entityId) set.add(panel.entityId)
+  if (Array.isArray(panel.entityIds)) {
+    for (const id of panel.entityIds) {
+      if (typeof id === 'string' && id) set.add(id)
+    }
+  }
+  const propEntityId = panel.props['entityId']
+  if (typeof propEntityId === 'string' && propEntityId) set.add(propEntityId)
+  const propEntityIds = panel.props['entityIds']
+  if (Array.isArray(propEntityIds)) {
+    for (const id of propEntityIds) {
+      if (typeof id === 'string' && id) set.add(id)
+    }
+  }
+  return Array.from(set)
+}
+
+function pruneUnboundEntities(
+  entities: Record<string, WorkspaceEntity>,
+  panels: Record<string, WorkspacePanel>,
+): Record<string, WorkspaceEntity> {
+  const referenced = new Set<string>()
+  for (const panel of Object.values(panels)) {
+    for (const entityId of extractEntityIdsFromPanel(panel)) {
+      referenced.add(entityId)
+    }
+  }
+  const next: Record<string, WorkspaceEntity> = {}
+  for (const [id, entity] of Object.entries(entities)) {
+    if (referenced.has(id)) next[id] = entity
+  }
+  return next
+}
 
 function applyPrimitive(state: WorkspaceData, primitive: ValidatedUIPrimitive): WorkspaceData {
   switch (primitive.method) {
@@ -175,10 +254,34 @@ function applyPrimitive(state: WorkspaceData, primitive: ValidatedUIPrimitive): 
       }
 
       const id = nextPanelId()
+      const primitiveEntityIds = new Set<string>()
+      if (typeof primitive.params.entityId === 'string' && primitive.params.entityId) {
+        primitiveEntityIds.add(primitive.params.entityId)
+      }
+      if (Array.isArray(primitive.params.entityIds)) {
+        for (const entityId of primitive.params.entityIds) {
+          if (typeof entityId === 'string' && entityId) primitiveEntityIds.add(entityId)
+        }
+      }
+      const propEntityId = primitive.params.props?.['entityId']
+      if (typeof propEntityId === 'string' && propEntityId) primitiveEntityIds.add(propEntityId)
+      const propEntityIds = primitive.params.props?.['entityIds']
+      if (Array.isArray(propEntityIds)) {
+        for (const entityId of propEntityIds) {
+          if (typeof entityId === 'string' && entityId) primitiveEntityIds.add(entityId)
+        }
+      }
+      const entityIds = Array.from(primitiveEntityIds)
+      const entityId = entityIds[0]
       const panel: WorkspacePanel = {
         id,
         type: primitive.params.type as PanelType,
-        props: primitive.params.props ?? {},
+        props: retainPanelProps(primitive.params.props ?? {}),
+        ...(entityId ? { entityId } : {}),
+        ...(entityIds.length > 0 ? { entityIds } : {}),
+        ...(entityId
+          ? { entityVersionSnapshot: state.activeEntities[entityId]?.version ?? 0 }
+          : {}),
       }
       const panels = { ...state.panels, [id]: panel }
 
@@ -228,7 +331,14 @@ function applyPrimitive(state: WorkspaceData, primitive: ValidatedUIPrimitive): 
       }
 
       uiEventBus.emit('ui.panel.opened', { panelId: id, type: panel.type })
-      return { ...state, panels, layout, focusedPanelId: id, pendingSplitSlot: null }
+      return {
+        ...state,
+        panels,
+        activeEntities: pruneUnboundEntities(state.activeEntities, panels),
+        layout,
+        focusedPanelId: id,
+        pendingSplitSlot: null,
+      }
     }
 
     case 'ui.panel.close': {
@@ -241,6 +351,7 @@ function applyPrimitive(state: WorkspaceData, primitive: ValidatedUIPrimitive): 
       return {
         ...state,
         panels,
+        activeEntities: pruneUnboundEntities(state.activeEntities, panels),
         layout,
         focusedPanelId: state.focusedPanelId === panelId ? null : state.focusedPanelId,
       }

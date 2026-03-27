@@ -67,7 +67,7 @@ Acceptance:
 
 ### P5. Inspector APIs
 
-Status: implemented as API layer, UI deferred
+Status: implemented as API layer, UI fully integrated
 
 - Added `/api/v1/sandboxes`
 - Added `/api/v1/sandboxes/{id}`

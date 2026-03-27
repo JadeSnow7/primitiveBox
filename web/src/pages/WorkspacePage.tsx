@@ -1,8 +1,11 @@
 import { useState, useCallback } from 'react'
 import { AICommandBar } from '@/components/workspace/AICommandBar'
 import { LayoutEngine } from '@/components/workspace/LayoutEngine'
+import { ReviewerPanel } from '@/components/workspace/ReviewerPanel'
+import { useOrchestratorStore } from '@/store/orchestratorStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { useTimelineStore } from '@/store/timelineStore'
+import { useSandboxStore } from '@/store/sandboxStore'
 import { replayTimelineGroup } from '@/lib/replayEngine'
 import type { TimelineEntry } from '@/types/timeline'
 import type { UIPrimitive } from '@/types/workspace'
@@ -12,7 +15,9 @@ import type { UIPrimitive } from '@/types/workspace'
 const KIND_DOT: Record<TimelineEntry['kind'], string> = {
   'plan':                 '#c084fc',  // purple-400
   'execution.call':       '#60a5fa',  // blue-400
+  'execution.pending_review': '#f97316',
   'execution.result':     '#4ade80',  // green-400
+  'execution.rejected':   '#f87171',
   'execution.skipped':    '#facc15',  // yellow-400
   'execution.simulated':  '#fb923c',  // orange-400 — replay stub
   'ui':                   '#a1a1aa',  // zinc-400
@@ -44,9 +49,12 @@ export function WorkspacePage() {
   const entries       = useTimelineStore((s) => s.entries)
   const entriesByGroup = useTimelineStore((s) => s.entriesByGroup)
   const appendTimeline = useTimelineStore((s) => s.append)
+  const activeSandboxId = useSandboxStore((s) => s.selectedId ?? undefined)
+  const orchestratorPhase = useOrchestratorStore((s) => s.phase)
 
   const [timelineOpen, setTimelineOpen] = useState(true)
   const [replayingGroup, setReplayingGroup] = useState<string | null>(null)
+  const [replayError, setReplayError] = useState<string | null>(null)
 
   const recent = [...entries].reverse().slice(0, 40)
   const groups = uniqueGroups(entries)
@@ -59,22 +67,26 @@ export function WorkspacePage() {
 
   // ── Replay handler ────────────────────────────────────────────────────────
   const handleReplay = useCallback(
-    (groupId: string) => {
+    async (groupId: string) => {
       setReplayingGroup(groupId)
+      setReplayError(null)
       try {
-        replayTimelineGroup({
+        await replayTimelineGroup({
           groupId,
           mode: 'simulate',
+          sandboxId: activeSandboxId,
           entries: entriesByGroup(groupId),
           resetWorkspace: resetWs,
           workspaceDispatch,
           appendTimeline,
         })
+      } catch (err) {
+        setReplayError(err instanceof Error ? err.message : 'Replay failed')
       } finally {
         setReplayingGroup(null)
       }
     },
-    [entriesByGroup, resetWs, workspaceDispatch, appendTimeline],
+    [activeSandboxId, entriesByGroup, resetWs, workspaceDispatch, appendTimeline],
   )
 
   return (
@@ -100,11 +112,21 @@ export function WorkspacePage() {
             {groups.length} groups
           </span>
         )}
+        {replayError && (
+          <span className="rounded-full border border-[var(--red)]/40 bg-[var(--red-bg)] px-2 py-0.5 font-mono text-[10px] text-[var(--red)]">
+            {replayError}
+          </span>
+        )}
       </div>
 
       {/* Layout */}
-      <div className="min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1">
         <LayoutEngine node={layout} />
+        {orchestratorPhase === 'AWAITING_REVIEW' && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+            <ReviewerPanel />
+          </div>
+        )}
       </div>
 
       {/* Timeline bar */}
@@ -147,7 +169,7 @@ export function WorkspacePage() {
                           <button
                             id={`replay-btn-${gid}`}
                             disabled={replayingGroup !== null}
-                            onClick={() => handleReplay(gid)}
+                            onClick={() => void handleReplay(gid)}
                             className={[
                               'shrink-0 rounded border border-[var(--border)]',
                               'px-1.5 py-0 font-mono text-[9px] leading-5',

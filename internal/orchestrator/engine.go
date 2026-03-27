@@ -553,7 +553,10 @@ func (e *Engine) inferPrimitiveIntent(ctx context.Context, primitiveID string) c
 		strings.HasPrefix(primitiveID, "fs.list"),
 		strings.HasPrefix(primitiveID, "fs.diff"),
 		strings.HasPrefix(primitiveID, "code.search"),
-		strings.HasPrefix(primitiveID, "code.symbols"):
+		strings.HasPrefix(primitiveID, "code.symbols"),
+		strings.HasPrefix(primitiveID, "db.query"),
+		strings.HasPrefix(primitiveID, "browser.goto"),
+		strings.HasPrefix(primitiveID, "browser.read"):
 		return cvr.PrimitiveIntent{
 			Category:   cvr.IntentQuery,
 			Reversible: true,
@@ -576,6 +579,7 @@ func (e *Engine) inferPrimitiveIntent(ctx context.Context, primitiveID string) c
 	case strings.HasPrefix(primitiveID, "fs.write"),
 		strings.HasPrefix(primitiveID, "macro.safe_edit"),
 		strings.HasPrefix(primitiveID, "repo.patch"),
+		strings.HasPrefix(primitiveID, "db.execute"),
 		strings.HasPrefix(primitiveID, "shell.exec"):
 		return cvr.PrimitiveIntent{
 			Category:   cvr.IntentMutation,

@@ -78,7 +78,7 @@ func (r *Router) routeAppPrimitive(ctx context.Context, manifest primitive.AppPr
 	defer cancel()
 
 	start := time.Now()
-	result, err := r.callAppSocket(ctx, manifest.SocketPath, method, params)
+	result, err := r.callAppSocket(ctx, manifest, manifest.SocketPath, method, params)
 	if err != nil {
 		return primitive.Result{}, err
 	}
@@ -86,16 +86,20 @@ func (r *Router) routeAppPrimitive(ctx context.Context, manifest primitive.AppPr
 	// If the manifest declares a verify endpoint, call it now.
 	// A failed verify triggers rollback (if declared) and returns an error.
 	if manifest.VerifyEndpoint != "" {
-		verifyResult, verifyErr := r.callAppSocket(ctx, manifest.SocketPath, manifest.VerifyEndpoint, json.RawMessage("{}"))
+		verifyResult, verifyErr := r.callAppSocket(ctx, manifest, manifest.SocketPath, manifest.VerifyEndpoint, params)
 		passed := verifyErr == nil && appResultPassed(verifyResult.Data)
 		if !passed {
+			rollbackParams := buildRollbackParams(method, params, result.Data, verifyResult.Data)
 			if manifest.RollbackEndpoint != "" {
-				_, _ = r.callAppSocket(ctx, manifest.SocketPath, manifest.RollbackEndpoint, json.RawMessage("{}"))
+				_, _ = r.callAppSocket(ctx, manifest, manifest.SocketPath, manifest.RollbackEndpoint, rollbackParams)
 			}
 			if verifyErr != nil {
 				return primitive.Result{}, fmt.Errorf("app_primitive_verify_error: %s", verifyErr.Error())
 			}
-			return primitive.Result{}, errors.New("app_primitive_verify_failed")
+			if manifest.RollbackEndpoint == "" {
+				return primitive.Result{}, errors.New("app_primitive_verify_failed: state.restore alone does not recover app state")
+			}
+			return primitive.Result{}, errors.New("app_primitive_verify_failed: verify failed")
 		}
 	}
 
@@ -105,7 +109,7 @@ func (r *Router) routeAppPrimitive(ctx context.Context, manifest primitive.AppPr
 
 // callAppSocket opens a fresh Unix socket connection, sends one JSON-RPC
 // request, and returns the decoded result. One connection per call.
-func (r *Router) callAppSocket(ctx context.Context, socketPath, method string, params json.RawMessage) (primitive.Result, error) {
+func (r *Router) callAppSocket(ctx context.Context, manifest primitive.AppPrimitiveManifest, socketPath, method string, params json.RawMessage) (primitive.Result, error) {
 	if len(params) == 0 {
 		params = json.RawMessage("{}")
 	}
@@ -168,6 +172,29 @@ func appResultPassed(data any) bool {
 		return true
 	}
 	return passed
+}
+
+func buildRollbackParams(method string, params json.RawMessage, resultData, verifyData any) json.RawMessage {
+	if len(params) == 0 {
+		params = json.RawMessage("{}")
+	}
+
+	var parsedParams any
+	if err := json.Unmarshal(params, &parsedParams); err != nil {
+		return params
+	}
+
+	envelope := map[string]any{
+		"primitive": method,
+		"params":    parsedParams,
+		"result":    resultData,
+		"verify":    verifyData,
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return params
+	}
+	return encoded
 }
 
 func appPrimitiveUnavailableError(manifest primitive.AppPrimitiveManifest, method, cause string) error {

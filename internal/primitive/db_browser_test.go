@@ -12,7 +12,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-func TestDBQueryReadonlyRejectsMultipleStatements(t *testing.T) {
+func TestDBQueryRejectsMultipleStatements(t *testing.T) {
 	t.Parallel()
 
 	if _, _, err := normalizeReadonlyQuery("select * from widgets; drop table widgets;", 100); err == nil {
@@ -20,7 +20,7 @@ func TestDBQueryReadonlyRejectsMultipleStatements(t *testing.T) {
 	}
 }
 
-func TestDBSchemaAndReadonlyQuerySQLite(t *testing.T) {
+func TestDBSchemaAndQuerySQLite(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
@@ -55,7 +55,7 @@ func TestDBSchemaAndReadonlyQuerySQLite(t *testing.T) {
 		t.Fatalf("expected schema output to be valid json")
 	}
 
-	queryPrimitive := NewDBQueryReadonly(workspace)
+	queryPrimitive := NewDBQuery(workspace)
 	queryPayload, _ := json.Marshal(map[string]any{
 		"connection": map[string]any{
 			"dialect": "sqlite",
@@ -66,11 +66,56 @@ func TestDBSchemaAndReadonlyQuerySQLite(t *testing.T) {
 	})
 	queryResult, err := queryPrimitive.Execute(context.Background(), queryPayload)
 	if err != nil {
-		t.Fatalf("db.query_readonly execute: %v", err)
+		t.Fatalf("db.query execute: %v", err)
 	}
 	body, _ := json.Marshal(queryResult.Data)
-	if !json.Valid(body) || !strings.Contains(string(body), `"limited":true`) {
-		t.Fatalf("expected limited query result, got %s", string(body))
+	if !json.Valid(body) || !strings.HasPrefix(string(body), `[`) {
+		t.Fatalf("expected row array query result, got %s", string(body))
+	}
+	if !strings.Contains(string(body), `"id":1`) {
+		t.Fatalf("expected first row to be present, got %s", string(body))
+	}
+
+	queryReadonlyPrimitive := NewDBQueryReadonly(workspace)
+	queryReadonlyResult, err := queryReadonlyPrimitive.Execute(context.Background(), queryPayload)
+	if err != nil {
+		t.Fatalf("db.query_readonly execute: %v", err)
+	}
+	readonlyBody, _ := json.Marshal(queryReadonlyResult.Data)
+	if !json.Valid(readonlyBody) || !strings.HasPrefix(string(readonlyBody), `{`) {
+		t.Fatalf("expected legacy readonly envelope, got %s", string(readonlyBody))
+	}
+	if !strings.Contains(string(readonlyBody), `"rows":[`) {
+		t.Fatalf("expected readonly result rows array, got %s", string(readonlyBody))
+	}
+	if !strings.Contains(string(readonlyBody), `"row_count":1`) {
+		t.Fatalf("expected readonly result row_count, got %s", string(readonlyBody))
+	}
+}
+
+func TestDBQueryRejectsDDL(t *testing.T) {
+	t.Parallel()
+
+	ddlStatements := []string{
+		"DROP TABLE widgets",
+		"DELETE FROM widgets",
+		"INSERT INTO widgets (name) VALUES ('x')",
+		"UPDATE widgets SET name = 'y' WHERE id = 1",
+		"CREATE TABLE foo (id INTEGER)",
+		"ALTER TABLE widgets ADD COLUMN weight REAL",
+		"TRUNCATE widgets",
+	}
+	for _, stmt := range ddlStatements {
+		if _, _, err := normalizeReadonlyQuery(stmt, 100); err == nil {
+			t.Errorf("expected db.query to reject DDL/DML statement %q", stmt)
+		}
+	}
+}
+
+func TestDBExecuteRejectsSelectQueries(t *testing.T) {
+	t.Parallel()
+	if _, err := normalizeExecuteQuery("SELECT * FROM widgets"); err == nil {
+		t.Fatalf("expected db.execute to reject read-only SELECT")
 	}
 }
 
@@ -130,5 +175,22 @@ func TestBrowserRootContextSupportsTimedActions(t *testing.T) {
 	defer runCancel2()
 	if err := chromedp.Run(runCtx2, chromedp.Navigate("data:text/html,<h1>again</h1>")); err != nil {
 		t.Fatalf("rerun timed browser action: %v", err)
+	}
+}
+
+func TestNormalizeBrowserPageMetadata(t *testing.T) {
+	t.Parallel()
+
+	url, title := normalizeBrowserPageMetadata(browserPageContent{
+		Title: "Redirected Page",
+		URL:   "https://example.test/final",
+	}, "https://example.test/original")
+	if url != "https://example.test/final" || title != "Redirected Page" {
+		t.Fatalf("expected extracted metadata to win, got url=%q title=%q", url, title)
+	}
+
+	url, title = normalizeBrowserPageMetadata(browserPageContent{}, "https://example.test/original")
+	if url != "https://example.test/original" || title != "https://example.test/original" {
+		t.Fatalf("expected fallback url/title, got url=%q title=%q", url, title)
 	}
 }

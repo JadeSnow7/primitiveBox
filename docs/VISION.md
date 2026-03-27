@@ -25,19 +25,12 @@ The thesis, extended to its conclusion: if every application exposes its capabil
 ## Phase Map
 
 ```
-<<<<<<< HEAD
-Phase 0  Runtime Foundation          ← COMPLETE
-Phase 1  Developer Experience        ← COMPLETE (CLI, CI/CD, demo)
+Phase 0  Runtime Foundation               ← COMPLETE
+Phase 1  Developer Experience             ← COMPLETE (CLI, CI/CD, demo)
 Phase 2  Application Primitive Protocol   ← COMPLETE (protocol validated, CVR end-to-end)
-Phase 3  Reference Adapters          ← NEXT (first real-world protocol consumers)
-=======
-Phase 0  Runtime Foundation          ← CURRENT (mostly complete)
-Phase 1  Developer Experience        ← IN PROGRESS (CLI, CI/CD, demo)
-Phase 2  Application Primitive Protocol   ← NEXT (protocol validation)
-Phase 3  Reference Adapters          ← First real-world protocol consumers
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
-Phase 4  Package Manager             ← Distribution and discovery
-Phase 5  AI-Native OS               ← The full vision
+Phase 3  Reference Adapters              ← COMPLETE (os-adapter, mcp-bridge, data-adapter, K8s driver)
+Phase 4  Package Manager                 ← COMPLETE (Boxfile, installer, Reviewer Gate, agent loop)
+Phase 5  AI-Native OS                    ← The full vision
 ```
 
 Each phase has a single validation criterion: **can you demonstrate the phase's value in under 60 seconds?**
@@ -53,11 +46,7 @@ Each phase has a single validation criterion: **can you demonstrate the phase's 
 
 ## Phase 0: Runtime Foundation
 
-<<<<<<< HEAD
 **Status: Complete. 14 system primitives, CVR coordinator, Docker sandboxes, SSE events, Python SDK.**
-=======
-**Status: Mostly complete. 14 system primitives, CVR coordinator, Docker sandboxes, SSE events, Python SDK.**
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 
 ### What Exists
 
@@ -83,10 +72,6 @@ Key Properties:
 ```
 
 ### Remaining Gaps
-<<<<<<< HEAD
-=======
-- Integration smoke test not yet automated
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 - shell.exec is an escape hatch that bypasses primitive typing (by design, but must be constrained in higher phases)
 - Kubernetes driver is skeleton-only
 
@@ -103,11 +88,7 @@ curl -X POST http://localhost:8080/rpc \
 
 ## Phase 1: Developer Experience
 
-<<<<<<< HEAD
 **Status: Complete. CLI, CI/CD pipeline, auto_fix_bug demo.**
-=======
-**Status: In progress. CLI expansion, CI/CD automation, auto_fix_bug demo.**
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 
 ### Deliverables
 
@@ -148,11 +129,7 @@ brew install JadeSnow7/tap/pb && pb version  # Distribution works
 
 ## Phase 2: Application Primitive Protocol
 
-<<<<<<< HEAD
 **Status: Complete. `app.register` works, verify/rollback dispatched through the router, 15-check smoke test passes.**
-=======
-**Status: Protocol validation slice in progress. This is the architectural linchpin — everything after depends on it.**
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 
 ### The Problem
 
@@ -253,7 +230,6 @@ Likely gaps (to be confirmed by protocol validation audit):
 ### Validation
 ```bash
 # Start the sandbox-local runtime server used by the Phase 2 protocol path.
-<<<<<<< HEAD
 ./bin/pb server start --sandbox-mode --workspace /tmp/pb-phase2-workspace --port 8080
 
 # Start the minimal protocol-validation adapter.
@@ -264,32 +240,12 @@ python3 tests/e2e/app_protocol_smoke.py
 ```
 
 The Phase 2 smoke validates registration, listing, dispatch, verify invocation, rollback invocation, and fail-closed behavior for irreversible primitives in under 60 seconds. All 15 checks pass.
-=======
-./bin/pb-runtimed --host 127.0.0.1 --port 8080 --workspace /tmp/pb-phase2-workspace --data-dir /tmp/pb-phase2-data
-
-# Start the minimal protocol-validation adapter and register it through app.register.
-./bin/pb-test-adapter --socket /tmp/test-app.sock --rpc-endpoint http://127.0.0.1:8080
-
-# Verify registration and metadata visibility.
-./bin/pb --endpoint http://127.0.0.1:8080 primitives list
-./bin/pb --endpoint http://127.0.0.1:8080 primitives schema demo.set --json
-
-# Call through the runtime.
-./bin/pb --endpoint http://127.0.0.1:8080 rpc demo.echo --params '{"message":"hello"}'
-./bin/pb --endpoint http://127.0.0.1:8080 rpc demo.fail --params '{"reason":"deliberate"}'
-
-# Canonical one-command proof.
-python3 tests/e2e/app_protocol_smoke.py
-```
-
-The Phase 2 smoke intentionally validates registration, listing, dispatch, deliberate failure, crash-to-unavailable fail-fast behavior, and reconnect-to-active recovery in under 60 seconds. The adapter also declares verify and rollback primitives so the public manifest surfaces show the full protocol contract, even when the smoke is focused on the transport/lifecycle path. It uses `demo.*` rather than `test.*` because `test.*` is a reserved system namespace.
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)
 
 ---
 
 ## Phase 3: Reference Adapters
 
-**Status: Design only. Depends on Phase 2 protocol stabilization.**
+**Status: Complete. `pb-os-adapter`, `pb-mcp-bridge`, `pb-data-adapter` shipped. Kubernetes driver production-ready. UI Primitive Workspace, Timeline, and Replay engine live.**
 
 ### Purpose
 
@@ -367,7 +323,7 @@ pb trace inspect <checkpoint-id>      # CVR decision path is correct
 
 ## Phase 4: Package Manager
 
-**Status: Vision only. Depends on Phase 3 proving the protocol works with real adapters.**
+**Status: Complete. Boxfile format, `pb install` / `pb remove` lifecycle, Reviewer Gate, agent loop with `AWAITING_REVIEW` suspension, and LLM context injection for app primitives all shipped.**
 
 ### The Problem
 
@@ -547,19 +503,27 @@ An AI-native OS is not "Linux with a chatbot bolted on." It is an operating syst
 
 ```
 ┌───────────────────────────────────────────────────────┐
-│  Agent Layer                                          │
-│  (LLM + planning + memory — NOT PrimitiveBox's job)   │
-│  Agents see: a flat namespace of typed primitives      │
+│  AI Orchestration & Agent Flow (The Brain)            │
+│  ├── Autonomous Planner & Executor Loop               │
+│  ├── Verification Agent (Independent Reviewer)        │
+│  └── Dual-path Engine (LLM + Local Fallback)          │
 └──────────────────────┬────────────────────────────────┘
-                       │ primitive calls
+                       │ state synchronization (Timeline)
 ┌──────────────────────▼────────────────────────────────┐
-│  PrimitiveBox Runtime (the "kernel")                  │
-│  ├── Primitive Registry (system + all installed apps)  │
-│  ├── CVR Coordinator (checkpoint/verify/recover)       │
-│  ├── Router (dispatch to correct adapter)              │
-│  ├── Event Store (full execution history)              │
-│  ├── Package Manager (install/remove/update)           │
-│  └── Sandbox Manager (isolation per adapter)           │
+│  UI Workspace & Observability Horizon                 │
+│  ├── Panel-based Workspace (Dynamic UI Primitives)    │
+│  ├── Timeline Store (Plan/Execution/UI Causality)     │
+│  └── Replay Engine (Group-Level Safety Replay)        │
+└──────────────────────┬────────────────────────────────┘
+                       │ primitive calls / SSE streams
+┌──────────────────────▼────────────────────────────────┐
+│  PrimitiveBox Runtime (the "kernel" / Control Plane)  │
+│  ├── Primitive Registry (system + all installed apps) │
+│  ├── CVR Coordinator (checkpoint/verify/recover)      │
+│  ├── Router (dispatch to correct adapter)             │
+│  ├── Event Store / SQLite State                       │
+│  ├── Package Manager (install/remove/update)          │
+│  └── Sandbox Manager (isolation per adapter)          │
 └──────────────────────┬────────────────────────────────┘
                        │ Unix socket dispatch
 ┌──────────────────────▼────────────────────────────────┐
@@ -578,14 +542,14 @@ An AI-native OS is not "Linux with a chatbot bolted on." It is an operating syst
 └───────────────────────────────────────────────────────┘
 ```
 
-### What PrimitiveBox Is NOT Responsible For
+### What PrimitiveBox Now Encompasses
 
-Even at Phase 5, PrimitiveBox remains a **runtime**, not a complete AI system:
+As PrimitiveBox has evolved into a complete AI-Native System Substrate, its responsibilities represent a unified stack from thought to execution:
 
-- **NOT responsible for:** agent planning, LLM inference, prompt engineering, conversation management, user authentication, task decomposition heuristics
-- **IS responsible for:** primitive dispatch, CVR enforcement, sandbox isolation, event recording, package lifecycle, execution safety
-
-The agent layer (planning, memory, reasoning) is built by others on top of PrimitiveBox, not inside it. PrimitiveBox is to AI agents what the Linux kernel is to applications: it doesn't decide what to do, but it guarantees that whatever gets done is safe, observable, and recoverable.
+- **AI Orchestration:** Autonomous looping, verification boundaries, stability guards, and deterministic action generation.
+- **Observability Workspace:** Rendering typed UI primitives, maintaining a strict causal timeline between agent plans and sandbox execution result mappings.
+- **Runtime Foundations:** Core sandbox dispatch, primitive schema validation, event storage, and comprehensive CVR enforcement.
+- **Application Execution:** Ensuring every action taken by the upper layers lands safely in an isolated or externally-adapted runtime with rollback guarantees.
 
 ### How This Differs From Existing Approaches
 
@@ -623,7 +587,6 @@ The demo matters more than the code. If you can't show it in 60 seconds, it's no
 
 ## Current Position and Next Actions
 
-<<<<<<< HEAD
 **You are here: Phase 0, 1, and 2 complete. Phase 3 is next.**
 
 Phase 2 deliverables shipped:
@@ -638,16 +601,3 @@ Phase 3 immediate priorities (in order):
 2. Implement `process.*` and `service.*` primitives with real CVR round-trips
 3. Validate that app-level rollback routes through the declared `rollback_endpoint`, not just `state.restore`
 4. Document remaining Phase 2 gaps (GAP-01 through GAP-08 in `app-primitive-protocol-report.md`) as Phase 3 acceptance criteria
-=======
-**You are here: Phase 0 complete, Phase 1 in progress.**
-
-Immediate priorities (in order):
-1. Integration smoke test — verify full RPC chain
-2. Branch cleanup + CI fix — unblock automation
-3. Phase 2 CI/CD — goreleaser, GHCR, Homebrew, PyPI
-4. auto_fix_bug demo — prove CVR value to an audience
-5. Application primitive protocol audit — find gaps before Phase 2 implementation
-6. Godoc coverage — make the codebase contributor-ready
-
-After these six items are done, Phase 1 is complete and Phase 2 begins.
->>>>>>> c16f6fb (Complete Phase 2 protocol validation and adapter lifecycle)

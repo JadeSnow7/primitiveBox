@@ -403,6 +403,11 @@ func (d *KubernetesDriver) buildManifest(sandboxID, image string, config Sandbox
 					},
 				},
 			}},
+			// Sandboxes are run-once executors managed by the control plane.
+			// Never auto-restart — a crashed pb-runtimed should surface as a
+			// health-check failure, not silently loop in a broken state.
+			RestartPolicy: corev1.RestartPolicyNever,
+			DNSPolicy:     corev1.DNSClusterFirst,
 		},
 	}
 	applyUserToPodSpec(&pod.Spec, config.User)
@@ -619,6 +624,20 @@ func buildKubernetesNetworkPolicy(names KubernetesResourceNames, labels map[stri
 		return netPolicy
 	}
 
+	// In policy mode, always permit DNS (UDP and TCP on port 53) so the pod can
+	// resolve Kubernetes service names through CoreDNS, even when other egress is
+	// restricted to specific CIDRs.
+	dnsPortUDP := intstr.FromInt(53)
+	dnsPortTCP := intstr.FromInt(53)
+	protocolUDP := corev1.ProtocolUDP
+	protocolTCP := corev1.ProtocolTCP
+	dnsRule := networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &protocolUDP, Port: &dnsPortUDP},
+			{Protocol: &protocolTCP, Port: &dnsPortTCP},
+		},
+	}
+
 	egressRule := networkingv1.NetworkPolicyEgressRule{}
 	for _, cidr := range policy.AllowCIDRs {
 		egressRule.To = append(egressRule.To, networkingv1.NetworkPolicyPeer{
@@ -633,9 +652,13 @@ func buildKubernetesNetworkPolicy(names KubernetesResourceNames, labels map[stri
 			Port:     &portCopy,
 		})
 	}
+
+	var egressRules []networkingv1.NetworkPolicyEgressRule
+	egressRules = append(egressRules, dnsRule)
 	if len(egressRule.To) > 0 || len(egressRule.Ports) > 0 {
-		netPolicy.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{egressRule}
+		egressRules = append(egressRules, egressRule)
 	}
+	netPolicy.Spec.Egress = egressRules
 	return netPolicy
 }
 

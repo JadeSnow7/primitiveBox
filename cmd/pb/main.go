@@ -54,6 +54,7 @@ agents can operate on local projects or Docker sandboxes through JSON-RPC.`,
 		newInitCmd(),
 		newDoctorCmd(),
 		newCompletionCmd(rootCmd),
+		newPackageCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
