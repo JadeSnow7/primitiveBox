@@ -106,7 +106,7 @@ pb doctor                                   # Environment self-check
 
 **CI/CD** — tag-triggered release pipeline:
 ```
-git tag v0.2.0 → goreleaser (multi-platform binaries)
+git tag v1.0.0 → goreleaser (multi-platform binaries)
                 → GHCR (sandbox + all-in-one Docker images)
                 → Homebrew (brew install JadeSnow7/tap/pb)
                 → PyPI (pip install primitivebox)
@@ -142,7 +142,7 @@ An external application connects via Unix socket and provides a **manifest**:
 ```json
 {
   "app_id": "postgres-adapter",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "primitives": [
     {
       "name": "db.query",
@@ -399,7 +399,7 @@ This single command:
     "syscalls": ["socket", "bind", "listen", "accept"]
   },
   "dependencies": {
-    "runtime": ["pb >= 0.3.0"],
+    "runtime": ["pb >= 1.0.0"],
     "system": ["libpq5"]
   },
   "healthcheck": {

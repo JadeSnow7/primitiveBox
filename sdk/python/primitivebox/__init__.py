@@ -21,7 +21,7 @@ from .primitives import BrowserPrimitives, CodePrimitives, DBPrimitives, FSPrimi
 from .events import EventEmitter
 from . import adapters
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
 __all__ = [
     "PrimitiveBoxClient",
     "AsyncPrimitiveBoxClient",

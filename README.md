@@ -4,7 +4,7 @@ PrimitiveBox is a **safe, replayable, and extensible OS for AI agents**.
 
 It is not a tool-calling wrapper or a prompt-chaining framework. It is an execution substrate: every agent action passes through typed primitive contracts, every mutation checkpoints state before it runs, every outcome is verified, and every execution is replayable. When something goes wrong, you roll back — not retry and hope.
 
-## v1.0 Release Candidate
+## v1.0.0
 
 All five core pillars are shipped and validated end-to-end:
 
