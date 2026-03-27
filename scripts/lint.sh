@@ -12,6 +12,7 @@ gopath="$(go env GOPATH)"
 cache_root="${TMPDIR:-/tmp}"
 lint_cache="${GOLANGCI_LINT_CACHE:-${cache_root%/}/primitivebox-golangci-lint-cache}"
 go_build_cache="${GOCACHE:-${cache_root%/}/primitivebox-go-build-cache}"
+lint_timeout="${GOLANGCI_LINT_TIMEOUT:-5m}"
 
 if [ -n "${gobin}" ]; then
   PATH="${gobin}:${PATH}"
@@ -37,6 +38,6 @@ echo "Using golangci-lint: $(golangci-lint version | head -n 1)"
 echo "Lint target Go version: ${go_version}"
 echo "golangci-lint cache: ${GOLANGCI_LINT_CACHE}"
 echo "Go build cache: ${GOCACHE}"
-echo "Lint command: golangci-lint run --go=${go_version} ./..."
+echo "Lint command: golangci-lint run --timeout=${lint_timeout} --go=${go_version} ./..."
 
-exec golangci-lint run --go="${go_version}" ./...
+exec golangci-lint run --timeout="${lint_timeout}" --go="${go_version}" ./...

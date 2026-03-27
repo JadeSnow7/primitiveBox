@@ -23,7 +23,6 @@ type fakeKubernetesClient struct {
 	deletedNames KubernetesResourceNames
 	execResult   *ExecResult
 	pfHandle     PortForwardHandle
-	pfClosed     bool
 }
 
 func (f *fakeKubernetesClient) Apply(ctx context.Context, manifest KubernetesManifest) error {
@@ -70,18 +69,6 @@ type fakePortForwardHandle string
 
 func (f fakePortForwardHandle) Address() string { return string(f) }
 func (f fakePortForwardHandle) Close() error    { return nil }
-
-// makeRunningPod returns a KubernetesPodStatus for a running pod.
-func makeRunningPod(sandboxID, namespace string) *KubernetesPodStatus {
-	return &KubernetesPodStatus{
-		Name:        sandboxID,
-		Namespace:   namespace,
-		Phase:       "Running",
-		Ready:       true,
-		ContainerID: "pod/" + sandboxID,
-		Labels:      map[string]string{"primitivebox.sandbox_id": sandboxID},
-	}
-}
 
 // defaultLookup returns a lookup that always returns the given namespace.
 func defaultLookup(namespace string) SandboxLookup {

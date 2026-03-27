@@ -112,8 +112,6 @@ func TestBuildManifestSetServiceAndPkgFamilies(t *testing.T) {
 		mfByName[manifests[i].Name] = &manifests[i]
 	}
 
-	type mf = interface{ GetName() string }
-
 	// service.status — query intent, no verify/rollback.
 	for i := range manifests {
 		if manifests[i].Name != "service.status" {

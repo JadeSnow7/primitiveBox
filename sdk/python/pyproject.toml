@@ -19,6 +19,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries",
 ]
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "tinycss2>=1.2.0",
+]
 
 [project.optional-dependencies]
 async = ["aiohttp>=3.9"]

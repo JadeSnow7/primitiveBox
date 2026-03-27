@@ -439,14 +439,7 @@ func (p *dbQueryReadonlyCompatPrimitive) Execute(ctx context.Context, params jso
 		"duration_ms": time.Since(start).Milliseconds(),
 	})
 	return Result{
-		Data: dbQueryResult{
-			Dialect:  queryResult.Dialect,
-			Columns:  queryResult.Columns,
-			Rows:     queryResult.Rows,
-			RowCount: queryResult.RowCount,
-			Limited:  queryResult.Limited,
-			Query:    queryResult.Query,
-		},
+		Data:     dbQueryResult(queryResult),
 		Duration: time.Since(start).Milliseconds(),
 	}, nil
 }
