@@ -16,6 +16,7 @@ import (
 	pathpkg "path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primitivebox/internal/audit"
@@ -256,7 +257,10 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 		return
 	}
 
-	var sinks []eventing.Sink
+	var (
+		sinks        []eventing.Sink
+		streamWriter *sseWriter
+	)
 	if s.eventBus != nil {
 		sinks = append(sinks, eventing.SinkFunc(func(ctx context.Context, evt eventing.Event) {
 			if evt.Method == "" {
@@ -272,8 +276,9 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			return
 		}
 		setSSEHeaders(w)
-		sinks = append(sinks, streamSink{writer: w, method: req.Method})
-		s.writeStreamEvent(w, "started", map[string]any{
+		streamWriter = &sseWriter{writer: w}
+		sinks = append(sinks, streamSink{writer: streamWriter, method: req.Method})
+		streamWriter.WriteEvent("started", map[string]any{
 			"method": req.Method,
 			"id":     req.ID,
 		})
@@ -337,7 +342,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			s.publishTraceStep(ctx, traceRecord)
 		}
 		if stream {
-			s.writeStreamEvent(w, "error", map[string]any{
+			streamWriter.WriteEvent("error", map[string]any{
 				"method":  req.Method,
 				"message": err.Error(),
 			})
@@ -354,7 +359,7 @@ func (s *Server) handleRPCRequest(w http.ResponseWriter, r *http.Request, stream
 			}
 			s.publishTraceStep(ctx, traceRecord)
 		}
-		s.writeStreamEvent(w, "completed", map[string]any{
+		streamWriter.WriteEvent("completed", map[string]any{
 			"method":      req.Method,
 			"result":      result,
 			"duration_ms": duration.Milliseconds(),
@@ -1317,7 +1322,7 @@ func writeSSEEvent(w http.ResponseWriter, name string, payload any) {
 }
 
 type streamSink struct {
-	writer http.ResponseWriter
+	writer *sseWriter
 	method string
 }
 
@@ -1360,7 +1365,18 @@ func (s streamSink) Emit(ctx context.Context, evt eventing.Event) {
 	if evt.Data != nil {
 		data["data"] = json.RawMessage(evt.Data)
 	}
-	writeSSEEvent(s.writer, name, data)
+	s.writer.WriteEvent(name, data)
+}
+
+type sseWriter struct {
+	writer http.ResponseWriter
+	mu     sync.Mutex
+}
+
+func (w *sseWriter) WriteEvent(name string, payload any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	writeSSEEvent(w.writer, name, payload)
 }
 
 func supportsStreaming(w http.ResponseWriter) bool {
