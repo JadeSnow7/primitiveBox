@@ -152,7 +152,24 @@ func (s *Server) Handler() http.Handler {
 	if s.uiFS != nil {
 		mux.HandleFunc("/", s.handleUI)
 	}
-	return corsMiddleware(s.allowedOrigins, mux)
+	return corsMiddleware(s.allowedOrigins, panicRecoveryMiddleware(mux))
+}
+
+// panicRecoveryMiddleware catches panics from any HTTP handler and converts
+// them to structured 500 responses so the gateway process does not crash.
+// /rpc and /rpc/stream also have their own per-request recover() that returns
+// a proper JSON-RPC -32603 error with the request ID; this middleware is the
+// safety net for all other routes.
+func panicRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[RPC] Recovered from panic in %s %s: %v", r.Method, r.URL.Path, rec)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {

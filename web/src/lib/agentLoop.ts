@@ -297,7 +297,7 @@ export async function runAgentLoop(
 
       const preDispatchWorkspace = workspaceFingerprint()
       try {
-        const result = await dispatchOrchestratorOutput(effectiveOutput, { ...dispatchOpts, sandboxId })
+        const result = await dispatchOrchestratorOutput(effectiveOutput, { ...dispatchOpts, sandboxId, signal })
         lastOutcomes = result.outcomes
         const lastNS = [...result.outcomes].reverse().find((o) => !o.skipped)
         if (lastNS) {

@@ -3,6 +3,11 @@ const MAX_ARRAY_ITEMS = 50
 const MAX_OBJECT_KEYS = 50
 const MAX_DEPTH = 6
 
+// Strip <script> and <style> blocks from stored payload strings.
+// Scope: in-memory hygiene only — prevents noisy LLM context and reduces
+// stored payload size. This is NOT the XSS boundary: workspace components
+// never use dangerouslySetInnerHTML, so React's text-node escaping is the
+// actual XSS defence regardless of what this function does or does not strip.
 function stripExecutableMarkup(input: string): string {
   return input
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')

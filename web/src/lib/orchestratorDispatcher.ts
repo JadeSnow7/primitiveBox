@@ -6,7 +6,7 @@ import {
   requiresHumanReview,
   resolvePrimitiveIntent,
 } from '@/lib/primitiveIntent'
-import { useOrchestratorStore } from '@/store/orchestratorStore'
+import { useOrchestratorStore, type ReviewDecision } from '@/store/orchestratorStore'
 import { getWorkspacePanels, upsertWorkspaceEntities } from '@/store/workspaceStore'
 import { getTimelineEntries } from '@/store/timelineStore'
 import type { OrchestratorOutput, UIPrimitive } from '@/types/workspace'
@@ -18,6 +18,12 @@ export interface DispatchOptions {
   workspaceDispatch: (primitives: UIPrimitive[]) => void
   appendTimeline: TimelineState['append']
   sandboxId?: string
+  /**
+   * Propagated from the agent loop. When fired, any in-progress
+   * requestReview() suspension is cancelled (resolved as 'rejected') so the
+   * loop can observe the aborted signal at its next iteration boundary.
+   */
+  signal?: AbortSignal
 }
 
 /** Result returned by `dispatchOrchestratorOutput` for use by the agent loop. */
@@ -131,7 +137,7 @@ export async function dispatchOrchestratorOutput(
   opts: DispatchOptions,
 ): Promise<DispatchResult> {
   const { groupId, plan = [], ui = [] } = output
-  const { workspaceDispatch, appendTimeline, sandboxId } = opts
+  const { workspaceDispatch, appendTimeline, sandboxId, signal } = opts
   const outcomes: ExecutionOutcome[] = []
   const execution = normalizeExecutionCalls(output, getTimelineEntries())
 
@@ -190,13 +196,33 @@ export async function dispatchOrchestratorOutput(
         side_effect: intent.side_effect,
       })
 
-      const decision = await useOrchestratorStore.getState().requestReview({
+      const reviewPromise = useOrchestratorStore.getState().requestReview({
         groupId,
         correlationId,
         method: call.method,
         params: call.params,
         intent,
       })
+
+      let decision: ReviewDecision
+      if (signal) {
+        // Race the human-review promise against the abort signal so the loop
+        // is not stuck indefinitely when the component unmounts or the caller
+        // cancels. Resolving as 'rejected' keeps timeline state consistent.
+        const abortPromise = new Promise<ReviewDecision>((resolve) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              useOrchestratorStore.getState().rejectPendingReview()
+              resolve('rejected')
+            },
+            { once: true },
+          )
+        })
+        decision = await Promise.race([reviewPromise, abortPromise])
+      } else {
+        decision = await reviewPromise
+      }
 
       if (decision === 'rejected') {
         const message = `Execution completely REJECTED by Human Reviewer. Re-evaluate your plan.`
