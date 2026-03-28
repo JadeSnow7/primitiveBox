@@ -1,6 +1,7 @@
 import { ORCHESTRATOR_SYSTEM_PROMPT } from '@/lib/orchestratorSystemPrompt'
 import { validateOrchestratorOutput } from '@/lib/uiPrimitiveValidator'
 import { usePrimitiveStore } from '@/store/primitiveStore'
+import { useGoalStore, getResolvedBindings } from '@/store/goalStore'
 import type {
   UIPrimitive,
   OrchestratorOutput,
@@ -8,6 +9,7 @@ import type {
   PlanStep,
   WorkspaceEntityType,
 } from '@/types/workspace'
+import type { GoalBindingType, GoalStatus } from '@/types/goal'
 import type { WorkspaceState } from '@/store/workspaceStore'
 import type { TimelineEntry } from '@/types/timeline'
 
@@ -56,6 +58,28 @@ export interface OrchestratorContext {
    * dispatch and which require human review.
    */
   availableAppPrimitives?: AppPrimitiveHint[]
+  /** The currently selected goal, if any. */
+  currentGoal?: {
+    id: string
+    description: string
+    status: GoalStatus
+    stepCount: number
+    lastStepPrimitive?: string
+  }
+  /** Verifications pending for the current goal. */
+  pendingVerifications?: Array<{
+    goal_id: string
+    verification_id: string
+    status: 'pending'
+    step_id?: string
+  }>
+  /** Resolved cross-package bindings for the current goal. */
+  resolvedBindings?: Array<{
+    binding_type: GoalBindingType
+    source_ref: string
+    target_ref: string
+    resolved_value: string
+  }>
 }
 
 export function buildOrchestratorContext(
@@ -112,6 +136,37 @@ export function buildOrchestratorContext(
           }))
       : undefined
 
+  // Inject current goal context.
+  const { goals, selectedId: selectedGoalId } = useGoalStore.getState()
+  const currentGoalObj = selectedGoalId ? goals.find((g) => g.id === selectedGoalId) : undefined
+  const currentGoal = currentGoalObj
+    ? {
+        id: currentGoalObj.id,
+        description: currentGoalObj.description,
+        status: currentGoalObj.status,
+        stepCount: currentGoalObj.steps.length,
+        lastStepPrimitive: currentGoalObj.steps.at(-1)?.primitive,
+      }
+    : undefined
+  const pendingVerifications = currentGoalObj
+    ? currentGoalObj.verifications
+        .filter((v) => v.status === 'pending')
+        .map((v) => ({
+          goal_id: currentGoalObj.id,
+          verification_id: v.id,
+          status: 'pending' as const,
+          step_id: v.step_id,
+        }))
+    : undefined
+  const resolvedBindingsList = currentGoalObj
+    ? getResolvedBindings(currentGoalObj.id).map((b) => ({
+        binding_type: b.binding_type,
+        source_ref: b.source_ref,
+        target_ref: b.target_ref,
+        resolved_value: b.resolved_value!,
+      }))
+    : undefined
+
   return {
     uiState: {
       panelCount: panels.length,
@@ -130,6 +185,13 @@ export function buildOrchestratorContext(
     timelineSummary: opts.timelineEntries.slice(-5).map((e) => e.kind),
     ...(availableAppPrimitives && availableAppPrimitives.length > 0
       ? { availableAppPrimitives }
+      : {}),
+    ...(currentGoal ? { currentGoal } : {}),
+    ...(pendingVerifications && pendingVerifications.length > 0
+      ? { pendingVerifications }
+      : {}),
+    ...(resolvedBindingsList && resolvedBindingsList.length > 0
+      ? { resolvedBindings: resolvedBindingsList }
       : {}),
   }
 }
@@ -210,6 +272,27 @@ function buildUserMessage(userInput: string, context: OrchestratorContext): stri
     for (const prim of context.availableAppPrimitives) {
       const reviewNote = prim.requires_review ? ' [REQUIRES HUMAN REVIEW — irreversible/high-risk]' : ''
       lines.push(`- ${prim.name} — ${prim.description}${reviewNote}`)
+    }
+  }
+  if (context.currentGoal) {
+    lines.push('')
+    lines.push('## Active Goal')
+    lines.push(`- ID: ${context.currentGoal.id}`)
+    lines.push(`- Description: ${context.currentGoal.description}`)
+    lines.push(`- Status: ${context.currentGoal.status}`)
+    lines.push(`- Steps recorded: ${context.currentGoal.stepCount}`)
+    if (context.currentGoal.lastStepPrimitive) {
+      lines.push(`- Last step: ${context.currentGoal.lastStepPrimitive}`)
+    }
+    if (context.pendingVerifications && context.pendingVerifications.length > 0) {
+      lines.push(`- Pending verifications: ${context.pendingVerifications.length} (must be resolved before goal can complete)`)
+    }
+  }
+  if (context.resolvedBindings && context.resolvedBindings.length > 0) {
+    lines.push('')
+    lines.push('## Resolved Bindings (do NOT re-ask for these)')
+    for (const b of context.resolvedBindings) {
+      lines.push(`- [${b.binding_type}] ${b.source_ref} → ${b.target_ref} = ${b.resolved_value}`)
     }
   }
   return lines.join('\n')

@@ -1,7 +1,9 @@
 import { useState, useCallback } from 'react'
 import { AICommandBar } from '@/components/workspace/AICommandBar'
+import { GoalListPanel } from '@/components/workspace/GoalListPanel'
 import { LayoutEngine } from '@/components/workspace/LayoutEngine'
 import { ReviewerPanel } from '@/components/workspace/ReviewerPanel'
+import { useGoalEventStream } from '@/hooks/useGoalEventStream'
 import { useOrchestratorStore } from '@/store/orchestratorStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { useTimelineStore } from '@/store/timelineStore'
@@ -41,6 +43,9 @@ function uniqueGroups(entries: TimelineEntry[]): string[] {
 // ─── WorkspacePage ────────────────────────────────────────────────────────────
 
 export function WorkspacePage() {
+  // Subscribe to goal SSE events once for the lifetime of this page.
+  useGoalEventStream()
+
   const layout     = useWorkspaceStore((s) => s.layout)
   const panelCount = Object.keys(useWorkspaceStore((s) => s.panels)).length
   const dispatch   = useWorkspaceStore((s) => s.dispatch)
@@ -95,6 +100,16 @@ export function WorkspacePage() {
       <div className="shrink-0">
         <AICommandBar />
       </div>
+
+      {/* Main area: goals sidebar + workspace panels */}
+      <div className="flex min-h-0 flex-1 gap-3">
+        {/* Goals sidebar */}
+        <div className="flex w-48 shrink-0 flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] p-2">
+          <GoalListPanel />
+        </div>
+
+        {/* Right column: status bar + layout + timeline */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
 
       {/* Status bar */}
       <div className="flex shrink-0 items-center gap-3">
@@ -221,6 +236,8 @@ export function WorkspacePage() {
           )}
         </div>
       )}
+        </div>{/* end right column */}
+      </div>{/* end main area */}
     </div>
   )
 }

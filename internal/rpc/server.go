@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"primitivebox/internal/audit"
+	"primitivebox/internal/control"
 	"primitivebox/internal/eventing"
+	"primitivebox/internal/goal"
 	"primitivebox/internal/primitive"
 	"primitivebox/internal/runtrace"
 	"primitivebox/internal/sandbox"
@@ -66,7 +68,9 @@ type Server struct {
 	manager        *sandbox.Manager
 	eventBus       *eventing.Bus
 	eventStore     eventing.Store
-	allowedOrigins []string // CORS origins; nil means no CORS headers are set
+	goalStore       control.GoalStore
+	goalCoordinator *goal.GoalCoordinator
+	allowedOrigins  []string // CORS origins; nil means no CORS headers are set
 
 	listener   net.Listener
 	server     *http.Server
@@ -100,6 +104,22 @@ func (s *Server) RegisterAppRegistry(reg primitive.AppPrimitiveRegistry) {
 	if s.router != nil {
 		s.router.RegisterAppRegistry(reg)
 	}
+}
+
+// AttachGoalStore wires the goal store for composition goal endpoints.
+func (s *Server) AttachGoalStore(gs control.GoalStore) {
+	s.goalStore = gs
+}
+
+// AttachGoalCoordinator wires the goal coordinator for execute and real replay.
+func (s *Server) AttachGoalCoordinator(gc *goal.GoalCoordinator) {
+	s.goalCoordinator = gc
+}
+
+// Router returns the server's sandbox.Router so external coordinators can
+// use it as a PrimitiveExecutor adapter.
+func (s *Server) Router() *sandbox.Router {
+	return s.router
 }
 
 // AttachEventing wires the event bus/store used by streaming and inspector APIs.
@@ -787,6 +807,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.handleAPITraceDetail(w, r, "", stepID)
 		}
+	case path == "goals":
+		s.handleAPIGoals(w, r)
+	case strings.HasPrefix(path, "goals/"):
+		s.handleAPIGoalDetail(w, r, strings.TrimPrefix(path, "goals/"))
 	case strings.HasPrefix(path, "sandboxes/"):
 		s.handleAPISandboxDetail(w, r, strings.TrimPrefix(path, "sandboxes/"))
 	default:

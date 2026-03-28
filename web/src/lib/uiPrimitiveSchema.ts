@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const PANEL_TYPES = ['trace', 'event_stream', 'sandbox', 'checkpoint', 'diff', 'primitive'] as const
+export const PANEL_TYPES = ['trace', 'event_stream', 'sandbox', 'checkpoint', 'diff', 'primitive', 'goal'] as const
 export const PanelTypeSchema = z.enum(PANEL_TYPES)
 
 const SemanticRefSchema = z.object({

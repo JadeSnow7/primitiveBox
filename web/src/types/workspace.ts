@@ -93,6 +93,7 @@ export type PanelType =
   | 'checkpoint'
   | 'diff'
   | 'primitive'
+  | 'goal'
 
 export type WorkspaceEntityType =
   | 'file'

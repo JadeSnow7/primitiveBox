@@ -205,7 +205,10 @@ export async function dispatchOrchestratorOutput(
       })
 
       let decision: ReviewDecision
-      if (signal) {
+      if (signal?.aborted) {
+        useOrchestratorStore.getState().rejectPendingReview()
+        decision = 'rejected'
+      } else if (signal) {
         // Race the human-review promise against the abort signal so the loop
         // is not stuck indefinitely when the component unmounts or the caller
         // cancels. Resolving as 'rejected' keeps timeline state consistent.

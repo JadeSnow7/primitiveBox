@@ -13,6 +13,7 @@ import urllib.request
 from typing import Any, Iterator, Optional
 
 from .events import EventEmitter
+from .goals import GoalPrimitives
 from .primitives import (
     BrowserPrimitives,
     CodePrimitives,
@@ -42,6 +43,7 @@ class PrimitiveBoxClient:
         self.macro = MacroPrimitives(self)
         self.db = DBPrimitives(self)
         self.browser = BrowserPrimitives(self)
+        self.goals = GoalPrimitives(self)
 
     def call(self, method: str, params: Optional[dict] = None, headers: Optional[dict[str, str]] = None) -> Any:
         self._call_id += 1

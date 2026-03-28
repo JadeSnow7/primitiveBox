@@ -34,6 +34,13 @@ type Engine struct {
 	appRegistry   primitive.AppPrimitiveRegistry
 }
 
+// ExecutorExecute delegates a single primitive call through the engine's executor.
+// Intended for use by external coordinators (e.g., GoalCoordinator) that need
+// to run verification primitives without the full CVR loop.
+func (e *Engine) ExecutorExecute(ctx context.Context, method string, params json.RawMessage) (*StepResult, error) {
+	return e.executor.Execute(ctx, method, params)
+}
+
 // SetAppRegistry wires an AppPrimitiveRegistry so the engine can look up
 // manifest Intent for app-registered primitives instead of defaulting to
 // IntentMutation/RiskHigh for all unrecognised method names.

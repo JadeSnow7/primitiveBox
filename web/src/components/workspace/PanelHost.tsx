@@ -9,6 +9,7 @@ const PANEL_LABELS: Record<PanelType, string> = {
   checkpoint: 'Checkpoint',
   diff: 'Diff',
   primitive: 'Primitives',
+  goal: 'Goal',
 }
 
 function PanelContent({ panel }: { panel: WorkspacePanel }) {

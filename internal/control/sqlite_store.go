@@ -144,6 +144,54 @@ func (s *SQLiteStore) init() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_app_primitives_app_id ON app_primitives (app_id, name ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_app_primitives_availability ON app_primitives (availability, name ASC)`,
+		`CREATE TABLE IF NOT EXISTS goals (
+			id               TEXT PRIMARY KEY,
+			description      TEXT NOT NULL,
+			status           TEXT NOT NULL,
+			packages_json    TEXT NOT NULL DEFAULT '[]',
+			sandbox_ids_json TEXT NOT NULL DEFAULT '[]',
+			created_at       INTEGER NOT NULL,
+			updated_at       INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_goals_status ON goals (status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS goal_steps (
+			id            TEXT PRIMARY KEY,
+			goal_id       TEXT NOT NULL,
+			primitive     TEXT NOT NULL,
+			input_json    TEXT NOT NULL DEFAULT '{}',
+			output_json   TEXT,
+			status        TEXT NOT NULL DEFAULT 'pending',
+			checkpoint_id TEXT,
+			seq           INTEGER NOT NULL DEFAULT 0,
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_goal_steps_goal_id ON goal_steps (goal_id, seq ASC)`,
+		`CREATE TABLE IF NOT EXISTS goal_verifications (
+			id            TEXT PRIMARY KEY,
+			goal_id       TEXT NOT NULL,
+			step_id       TEXT,
+			status        TEXT NOT NULL DEFAULT 'pending',
+			verdict       TEXT,
+			evidence_json TEXT NOT NULL DEFAULT '{}',
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_goal_verifications_goal_id ON goal_verifications (goal_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS goal_bindings (
+			id             TEXT PRIMARY KEY,
+			goal_id        TEXT NOT NULL,
+			binding_type   TEXT NOT NULL,
+			source_ref     TEXT NOT NULL,
+			target_ref     TEXT NOT NULL,
+			status         TEXT NOT NULL DEFAULT 'pending',
+			resolved_value TEXT,
+			failure_reason TEXT,
+			metadata_json  TEXT NOT NULL DEFAULT '{}',
+			created_at     INTEGER NOT NULL,
+			updated_at     INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_goal_bindings_goal_id ON goal_bindings (goal_id, created_at ASC)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -171,6 +219,47 @@ func (s *SQLiteStore) init() error {
 	for _, stmt := range appPrimitiveMigrations {
 		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("migrate app_primitives schema: %w", err)
+		}
+	}
+	goalVerificationMigrations := []string{
+		`ALTER TABLE goal_verifications ADD COLUMN check_type TEXT`,
+		`ALTER TABLE goal_verifications ADD COLUMN check_params TEXT`,
+	}
+	for _, stmt := range goalVerificationMigrations {
+		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("migrate goal_verifications schema: %w", err)
+		}
+	}
+	goalStepMigrations := []string{
+		`ALTER TABLE goal_steps ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low'`,
+		`ALTER TABLE goal_steps ADD COLUMN reversible INTEGER NOT NULL DEFAULT 1`,
+	}
+	for _, stmt := range goalStepMigrations {
+		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("migrate goal_steps schema: %w", err)
+		}
+	}
+	// goal_reviews is a new table — CREATE IF NOT EXISTS is idempotent.
+	goalReviewsStmts := []string{
+		`CREATE TABLE IF NOT EXISTS goal_reviews (
+			id              TEXT PRIMARY KEY,
+			goal_id         TEXT NOT NULL,
+			step_id         TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'pending',
+			primitive       TEXT NOT NULL,
+			risk_level      TEXT NOT NULL DEFAULT 'high',
+			reversible      INTEGER NOT NULL DEFAULT 1,
+			side_effect     TEXT,
+			decision_reason TEXT,
+			created_at      INTEGER NOT NULL,
+			updated_at      INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_goal_reviews_goal_id ON goal_reviews (goal_id, created_at ASC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_goal_reviews_step_pending ON goal_reviews (step_id) WHERE status = 'pending'`,
+	}
+	for _, stmt := range goalReviewsStmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("init goal_reviews schema: %w", err)
 		}
 	}
 	return nil

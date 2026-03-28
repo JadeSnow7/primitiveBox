@@ -17,6 +17,8 @@ import (
 	"primitivebox/internal/config"
 	"primitivebox/internal/control"
 	"primitivebox/internal/eventing"
+	"primitivebox/internal/goal"
+	"primitivebox/internal/orchestrator"
 	"primitivebox/internal/primitive"
 	"primitivebox/internal/rpc"
 	"primitivebox/internal/sandbox"
@@ -154,6 +156,11 @@ func runServer(host string, port int, workspaceDir string, sandboxMode, serveUI 
 	server := rpc.NewServer(registry, auditor, manager)
 	server.RegisterAppRegistry(control.NewSQLiteAppRegistry(store, bus))
 	server.AttachEventing(bus, store)
+	goalStore := control.NewSQLiteGoalStore(store.DB())
+	server.AttachGoalStore(goalStore)
+	goalAdapter := goal.NewRouterExecutorAdapter(server.Router())
+	goalEngine := orchestrator.NewEngine(goalAdapter)
+	server.AttachGoalCoordinator(goal.NewGoalCoordinator(goalStore, goalEngine, bus, manager))
 	server.SetAllowedOrigins([]string{"http://localhost:5173"})
 	if serveUI {
 		uiFS, err := pbui.DistFS()

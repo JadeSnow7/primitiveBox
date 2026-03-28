@@ -343,6 +343,57 @@ describe('dispatchOrchestratorOutput', () => {
     expect(rejectedEntry.decision).toBe('rejected')
   })
 
+  it('fails closed immediately when review signal is already aborted', async () => {
+    const appendTimeline = useTimelineStore.getState().append
+    const abort = new AbortController()
+    abort.abort()
+
+    const result = await dispatchOrchestratorOutput({
+      groupId: 'review-aborted-group',
+      execution: [{ id: 'email-aborted', method: 'email.send', params: { to: 'carol@example.com' } }],
+    }, {
+      workspaceDispatch: vi.fn(),
+      appendTimeline,
+      sandboxId: 'sb-review',
+      signal: abort.signal,
+    })
+
+    expect(mockedCallPrimitive).not.toHaveBeenCalled()
+    expect(result.outcomes[0].error).toContain('REJECTED by Human Reviewer')
+    expect(useOrchestratorStore.getState().phase).not.toBe('AWAITING_REVIEW')
+
+    const rejectedEntry = useTimelineStore.getState().entries.find(
+      (e) => e.kind === 'execution.rejected',
+    ) as Extract<TimelineEntry, { kind: 'execution.rejected' }>
+    expect(rejectedEntry.method).toBe('email.send')
+    expect(rejectedEntry.decision).toBe('rejected')
+  })
+
+  it('fails closed when review is aborted after entering pending state', async () => {
+    const appendTimeline = useTimelineStore.getState().append
+    const abort = new AbortController()
+
+    const pendingDispatch = dispatchOrchestratorOutput({
+      groupId: 'review-abort-during-pending-group',
+      execution: [{ id: 'email-abort-pending', method: 'email.send', params: { to: 'dave@example.com' } }],
+    }, {
+      workspaceDispatch: vi.fn(),
+      appendTimeline,
+      sandboxId: 'sb-review',
+      signal: abort.signal,
+    })
+
+    await Promise.resolve()
+    expect(useOrchestratorStore.getState().phase).toBe('AWAITING_REVIEW')
+
+    abort.abort()
+    const result = await pendingDispatch
+
+    expect(mockedCallPrimitive).not.toHaveBeenCalled()
+    expect(result.outcomes[0].error).toContain('REJECTED by Human Reviewer')
+    expect(useOrchestratorStore.getState().phase).not.toBe('AWAITING_REVIEW')
+  })
+
   it('pauses data.insert (app primitive) for review — approves and dispatches exact payload', async () => {
     mockedCallPrimitive.mockResolvedValue({ inserted: true, last_insert_id: 7, rows_affected: 1 })
     const appendTimeline = useTimelineStore.getState().append

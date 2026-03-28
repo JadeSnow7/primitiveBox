@@ -26,6 +26,7 @@ except ImportError:
     _HTTPX_AVAILABLE = False
 
 from .events import EventEmitter
+from .goals import AsyncGoalPrimitives
 from .primitives import BrowserPrimitives, CodePrimitives, DBPrimitives, FSPrimitives, ShellPrimitives, StatePrimitives, VerifyPrimitives, MacroPrimitives
 
 
@@ -55,6 +56,9 @@ class AsyncPrimitiveBoxClient:
         self._call_id = 0
         self._events = EventEmitter()
         self._http: Optional[httpx.AsyncClient] = None
+
+        # Goal composition helpers (async via thread executor).
+        self.goals = AsyncGoalPrimitives(self)
 
         # Bind primitive wrappers — they call self.call() which is async-aware
         self.fs = _AsyncPrimitiveGroup(self, FSPrimitives)
