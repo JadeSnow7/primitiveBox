@@ -86,6 +86,17 @@ describe('UserGoalList', () => {
     await act(async () => { root.unmount() })
   })
 
+  it('shows "执行中" badge for verifying goals', async () => {
+    resetStore([makeGoal('g1', 'verifying', 'verifying task')])
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(<UserGoalList onNewGoal={vi.fn()} />)
+    })
+    expect(container.textContent).toContain('执行中')
+    await act(async () => { root.unmount() })
+  })
+
   it('calls select(id) when a goal is clicked', async () => {
     const selectMock = vi.fn()
     resetStore([makeGoal('g1', 'completed', 'click me')])

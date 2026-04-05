@@ -79,6 +79,7 @@ describe('UserGoalInput', () => {
     })
     expect(executeMock).toHaveBeenCalledWith('new-g1')
     expect(selectMock).toHaveBeenCalledWith('new-g1')
+    expect(onClose).toHaveBeenCalledOnce()
     await act(async () => { root.unmount() })
   })
 
