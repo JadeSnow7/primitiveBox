@@ -60,7 +60,8 @@ export function UserApprovalCard({ goal, review }: { goal: Goal; review: GoalRev
       <div className="flex gap-2">
         <Button
           size="sm"
-          className="flex-1 border-[var(--green)] bg-[var(--green-bg)] text-[var(--green)] hover:opacity-80"
+          variant="subtle"
+          className="flex-1 border-[var(--green,#4ade80)] text-[var(--green,#4ade80)]"
           disabled={loading !== null}
           onClick={() => void handleApprove()}
         >

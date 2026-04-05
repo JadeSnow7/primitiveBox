@@ -123,4 +123,19 @@ describe('UserApprovalCard', () => {
     expect(rejectMock).toHaveBeenCalledWith('goal-1', 'review-1', undefined)
     await act(async () => { root.unmount() })
   })
+
+  it('shows error message when approve throws', async () => {
+    approveMock.mockRejectedValueOnce(new Error('network error'))
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(<UserApprovalCard goal={makeGoal()} review={makeReview()} />)
+    })
+    const btn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.includes('批准')
+    )!
+    await act(async () => { btn.click() })
+    expect(container.textContent).toContain('操作失败')
+    await act(async () => { root.unmount() })
+  })
 })
