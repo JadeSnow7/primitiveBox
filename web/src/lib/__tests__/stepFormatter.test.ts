@@ -37,6 +37,11 @@ describe('formatStepLabel', () => {
     expect(formatStepLabel(step)).toBe('请求网络 https://api.example.com')
   })
 
+  it('maps http.post with url param', () => {
+    const step = makeStep({ primitive: 'http.post', input: { url: 'https://api.example.com/data' } })
+    expect(formatStepLabel(step)).toBe('发送请求 https://api.example.com/data')
+  })
+
   it('uses primitive name as fallback for unknown primitives', () => {
     const step = makeStep({ primitive: 'custom.op', input: {} })
     expect(formatStepLabel(step)).toBe('custom.op')
