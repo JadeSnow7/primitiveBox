@@ -34,9 +34,10 @@ type Engine struct {
 	appRegistry   primitive.AppPrimitiveRegistry
 }
 
-// ExecutorExecute delegates a single primitive call through the engine's executor.
-// Intended for use by external coordinators (e.g., GoalCoordinator) that need
-// to run verification primitives without the full CVR loop.
+// ExecutorExecute delegates a single primitive call through the engine's executor,
+// bypassing the CVR loop (no checkpoint, no verify, no recovery).
+// Intended for callers that explicitly do not need the CVR path, such as
+// VerificationRunner executing verification-only primitives.
 func (e *Engine) ExecutorExecute(ctx context.Context, method string, params json.RawMessage) (*StepResult, error) {
 	return e.executor.Execute(ctx, method, params)
 }

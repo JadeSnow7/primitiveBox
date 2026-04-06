@@ -149,9 +149,10 @@ func (c *GoalCoordinator) Resume(ctx context.Context, goalID string) error {
 	return c.finalizeAfterExecution(ctx, goalID)
 }
 
-// executeSteps runs steps in seq order using the executor directly, honouring
-// the review gate for high-risk steps. Steps already in a terminal state are
-// skipped, enabling seamless resume after a pause.
+// executeSteps runs steps in seq order via Engine.ExecuteStepViaCVR (full CVR
+// path: pre-checkpoint → execute → verify → recover), honouring the review gate
+// for high-risk steps. Steps already in a terminal state are skipped, enabling
+// seamless resume after a pause.
 func (c *GoalCoordinator) executeSteps(ctx context.Context, goalID string, steps []*control.GoalStep, opts executeStepsOpts) error {
 	for _, step := range steps {
 		switch step.Status {
