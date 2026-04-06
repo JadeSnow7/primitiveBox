@@ -3,6 +3,7 @@ package goal
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"primitivebox/internal/control"
@@ -369,12 +370,30 @@ func TestGoalCoordinator_Replay_NotFound(t *testing.T) {
 // fakeExecutor simulates a PrimitiveExecutor for coordinator tests.
 // Methods listed in successMethods succeed; all others fail.
 type fakeExecutor struct {
+	mu             sync.Mutex
+	calledMethods  []string
 	successMethods map[string]bool
 	resultByMethod map[string]json.RawMessage
 	errByMethod    map[string]error
 }
 
+// called reports whether method was invoked at least once.
+func (f *fakeExecutor) called(method string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.calledMethods {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeExecutor) Execute(_ context.Context, method string, _ json.RawMessage) (*orchestrator.StepResult, error) {
+	f.mu.Lock()
+	f.calledMethods = append(f.calledMethods, method)
+	f.mu.Unlock()
+
 	if f.errByMethod != nil && f.errByMethod[method] != nil {
 		return &orchestrator.StepResult{
 			Success: false,
@@ -570,5 +589,64 @@ func TestGoalCoordinator_Resume_NotPaused(t *testing.T) {
 	err := coord.Resume(ctx, g.ID)
 	if err == nil {
 		t.Fatal("expected error resuming non-paused goal")
+	}
+}
+
+// TestGoalCoordinator_Execute_PreCheckpointCalledForMutationStep verifies that
+// executing a goal step routes through the full CVR path (Engine.ExecuteStepViaCVR),
+// which triggers state.checkpoint before a mutation primitive is executed.
+func TestGoalCoordinator_Execute_PreCheckpointCalledForMutationStep(t *testing.T) {
+	t.Parallel()
+
+	gs, bus := openTestStore(t)
+	ctx := context.Background()
+
+	g := &control.Goal{
+		ID:          "goal-cvr-checkpoint",
+		Description: "cvr checkpoint verification",
+		Status:      control.GoalCreated,
+		Packages:    []string{},
+		SandboxIDs:  []string{},
+	}
+	// shell.exec is inferred by the engine as mutation/irreversible/high →
+	// CVR coordinator must issue state.checkpoint before executing it.
+	// RiskLevel is "low" so the human-review gate is skipped.
+	steps := []*control.GoalStep{
+		{
+			ID:         "step-cvr-1",
+			GoalID:     g.ID,
+			Primitive:  "shell.exec",
+			Input:      json.RawMessage(`{"command":"echo hello"}`),
+			Status:     control.GoalStepPending,
+			RiskLevel:  "low",
+			Reversible: false,
+			Seq:        1,
+		},
+	}
+	if err := gs.CreateGoalFull(ctx, g, steps, bus); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	executor := &fakeExecutor{
+		successMethods: map[string]bool{"shell.exec": true},
+	}
+	engine := orchestrator.NewEngine(executor)
+	coord := NewGoalCoordinator(gs, engine, bus, nil)
+
+	if err := coord.Execute(ctx, g.ID); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// Verify goal completed.
+	got, _, _ := gs.GetGoal(ctx, g.ID)
+	if got.Status != control.GoalCompleted {
+		t.Errorf("goal status: got %q, want completed", got.Status)
+	}
+
+	// The critical assertion: state.checkpoint must have been called, proving
+	// that execution went through Engine.ExecuteStepViaCVR → CVRCoordinator
+	// rather than the bypass path (ExecutorExecute).
+	if !executor.called("state.checkpoint") {
+		t.Error("state.checkpoint was never called — goal step did not go through the CVR path")
 	}
 }
