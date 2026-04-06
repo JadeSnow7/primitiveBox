@@ -41,6 +41,39 @@ func (e *Engine) ExecutorExecute(ctx context.Context, method string, params json
 	return e.executor.Execute(ctx, method, params)
 }
 
+// ExecuteStepViaCVR executes a single primitive through the full CVR path:
+// pre-checkpoint → execute → verify → recover.
+// It is the correct entry point for any external caller (e.g. GoalCoordinator)
+// that owns a primitive step with potential side effects.
+// taskID and sandboxID are used for trace/checkpoint manifest labelling;
+// they do not need to be persisted tasks in the Engine's state tracker.
+func (e *Engine) ExecuteStepViaCVR(
+	ctx context.Context,
+	taskID, sandboxID, stepID, primitive string,
+	input json.RawMessage,
+) (*StepResult, error) {
+	// Construct an ephemeral task solely to satisfy executeStepWithRecovery's
+	// signature. The task is not tracked in the Engine's StateTracker.
+	task := &Task{
+		ID:         taskID,
+		SandboxID:  sandboxID,
+		Status:     TaskExecuting,
+		MaxRetries: 1, // GoalCoordinator owns retry policy at the goal level;
+		              // allow one attempt here so CVR can still checkpoint and
+		              // apply rollback on first failure before surfacing the error.
+	}
+	step := Step{
+		ID:        stepID,
+		Primitive: primitive,
+		Input:     input,
+		Status:    StepPending,
+	}
+	task.Steps = []Step{step}
+
+	result, err := e.executeStepWithRecovery(ctx, task, &task.Steps[0])
+	return result, err
+}
+
 // SetAppRegistry wires an AppPrimitiveRegistry so the engine can look up
 // manifest Intent for app-registered primitives instead of defaulting to
 // IntentMutation/RiskHigh for all unrecognised method names.
