@@ -58,9 +58,13 @@ func (e *Engine) ExecuteStepViaCVR(
 		ID:         taskID,
 		SandboxID:  sandboxID,
 		Status:     TaskExecuting,
-		MaxRetries: 1, // GoalCoordinator owns retry policy at the goal level;
-		              // allow one attempt here so CVR can still checkpoint and
-		              // apply rollback on first failure before surfacing the error.
+		// MaxRetries: 1 allows one retry after the first attempt (two total).
+		// The engine loop is inclusive: attempt ∈ [0, MaxRetries].
+		// GoalCoordinator owns goal-level retry policy; we allow one retry here
+		// so CVR can still checkpoint on the first attempt and apply rollback on
+		// the first failure before surfacing the error.
+		// NOTE: Do not set this to 0 — the engine treats 0 as "unset, use default 3".
+		MaxRetries: 1,
 	}
 	step := Step{
 		ID:        stepID,
