@@ -34,11 +34,49 @@ type Engine struct {
 	appRegistry   primitive.AppPrimitiveRegistry
 }
 
-// ExecutorExecute delegates a single primitive call through the engine's executor.
-// Intended for use by external coordinators (e.g., GoalCoordinator) that need
-// to run verification primitives without the full CVR loop.
+// ExecutorExecute delegates a single primitive call through the engine's executor,
+// bypassing the CVR loop (no checkpoint, no verify, no recovery).
+// Intended for callers that explicitly do not need the CVR path, such as
+// VerificationRunner executing verification-only primitives.
 func (e *Engine) ExecutorExecute(ctx context.Context, method string, params json.RawMessage) (*StepResult, error) {
 	return e.executor.Execute(ctx, method, params)
+}
+
+// ExecuteStepViaCVR executes a single primitive through the full CVR path:
+// pre-checkpoint → execute → verify → recover.
+// It is the correct entry point for any external caller (e.g. GoalCoordinator)
+// that owns a primitive step with potential side effects.
+// taskID and sandboxID are used for trace/checkpoint manifest labelling;
+// they do not need to be persisted tasks in the Engine's state tracker.
+func (e *Engine) ExecuteStepViaCVR(
+	ctx context.Context,
+	taskID, sandboxID, stepID, primitive string,
+	input json.RawMessage,
+) (*StepResult, error) {
+	// Construct an ephemeral task solely to satisfy executeStepWithRecovery's
+	// signature. The task is not tracked in the Engine's StateTracker.
+	task := &Task{
+		ID:         taskID,
+		SandboxID:  sandboxID,
+		Status:     TaskExecuting,
+		// MaxRetries: 1 allows one retry after the first attempt (two total).
+		// The engine loop is inclusive: attempt ∈ [0, MaxRetries].
+		// GoalCoordinator owns goal-level retry policy; we allow one retry here
+		// so CVR can still checkpoint on the first attempt and apply rollback on
+		// the first failure before surfacing the error.
+		// NOTE: Do not set this to 0 — the engine treats 0 as "unset, use default 3".
+		MaxRetries: 1,
+	}
+	step := Step{
+		ID:        stepID,
+		Primitive: primitive,
+		Input:     input,
+		Status:    StepPending,
+	}
+	task.Steps = []Step{step}
+
+	result, err := e.executeStepWithRecovery(ctx, task, &task.Steps[0])
+	return result, err
 }
 
 // SetAppRegistry wires an AppPrimitiveRegistry so the engine can look up

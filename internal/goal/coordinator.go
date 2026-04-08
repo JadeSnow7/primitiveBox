@@ -149,9 +149,10 @@ func (c *GoalCoordinator) Resume(ctx context.Context, goalID string) error {
 	return c.finalizeAfterExecution(ctx, goalID)
 }
 
-// executeSteps runs steps in seq order using the executor directly, honouring
-// the review gate for high-risk steps. Steps already in a terminal state are
-// skipped, enabling seamless resume after a pause.
+// executeSteps runs steps in seq order via Engine.ExecuteStepViaCVR (full CVR
+// path: pre-checkpoint → execute → verify → recover), honouring the review gate
+// for high-risk steps. Steps already in a terminal state are skipped, enabling
+// seamless resume after a pause.
 func (c *GoalCoordinator) executeSteps(ctx context.Context, goalID string, steps []*control.GoalStep, opts executeStepsOpts) error {
 	for _, step := range steps {
 		switch step.Status {
@@ -189,8 +190,14 @@ func (c *GoalCoordinator) executeSteps(ctx context.Context, goalID string, steps
 			log.Printf("[GoalCoordinator] mark step running %s: %v", step.ID, stepErr)
 		}
 
-		// Execute the step primitive.
-		result, execErr := c.engine.ExecutorExecute(ctx, step.Primitive, step.Input)
+		// Execute the step primitive via the full CVR path:
+		// Engine.ExecuteStepViaCVR → executeStepWithRecovery → CVRCoordinator.Execute
+		// This ensures pre-checkpoint, verify, and recovery are applied for every
+		// step with side effects. The human review gate (high-risk step approval) and
+		// control-plane status sync are unchanged.
+		// sandboxID is passed as "" because GoalStep does not carry a sandbox ID;
+		// this is only used for trace/checkpoint manifest labelling.
+		result, execErr := c.engine.ExecuteStepViaCVR(ctx, goalID, "", step.ID, step.Primitive, step.Input)
 		if execErr != nil || (result != nil && !result.Success) {
 			var out json.RawMessage
 			if result != nil {
